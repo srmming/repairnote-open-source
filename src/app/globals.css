@@ -127,10 +127,6 @@
   border-color: hsl(var(--border));
 }
 
-html {
-  font-size: clamp(14px, 0.55vw + 7.6px, 21px);
-}
-
 html,
 body {
   min-height: 100%;
@@ -416,15 +412,11 @@ button:disabled {
 }
 
 .topbar {
-  width: 100%;
   height: 3.75rem;
   display: flex;
   align-items: center;
   gap: 1rem;
-  padding-block: 0;
-  /* Full-bleed bar spanning the whole .main, with inner content kept aligned
-     to the 96rem-centered .page content (gutter + 2rem inner padding). */
-  padding-inline: max(2rem, calc((100% - 96rem) / 2 + 2rem));
+  padding: 0 2rem;
   background: hsl(var(--background));
   border-bottom: 1px solid hsl(var(--border));
 }
@@ -496,9 +488,6 @@ button:disabled {
 }
 
 .page {
-  width: 100%;
-  max-width: 96rem;
-  margin-inline: auto;
   padding: 1.5rem 2rem 3rem;
 }
 
@@ -1463,9 +1452,6 @@ button:disabled {
 .detail-page {
   position: relative;
   overflow: visible;
-  width: 100%;
-  max-width: 96rem;
-  margin-inline: auto;
   padding: 1.5rem 2rem 6rem;
   background: hsl(var(--background));
 }
