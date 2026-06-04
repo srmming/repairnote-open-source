@@ -4408,6 +4408,8 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const [signatureOpen, setSignatureOpen] = useState(false);
   const [paymentConfirm, setPaymentConfirm] = useState("");
   const [paymentReceived, setPaymentReceived] = useState("");
+  const [finalPaymentReceived, setFinalPaymentReceived] = useState("");
+  const [depositPaymentReceived, setDepositPaymentReceived] = useState("");
   const [depositTargetAmount, setDepositTargetAmount] = useState("");
   const [pendingPaidRepair, setPendingPaidRepair] = useState(null);
   const [costDialogOpen, setCostDialogOpen] = useState(false);
@@ -4420,6 +4422,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   }, [repairId, existing?.id, isWarrantyRoute]);
   useEffect(() => {
     const targetDraftId = existing?.id || "new";
+    if (repairId && !existing && repairDraft?.id === repairId) return;
     if (repairDraft?.id === targetDraftId) return;
     setQrDataUrl("");
     setRepairDraft(fallbackDraft);
@@ -4493,7 +4496,13 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const hasBillableTotal = total >= 0.01;
   const paymentRowsForDraft = repairPaymentsForDisplay(draft, t);
   const isFirstPayment = paymentRowsForDraft.length === 0;
-  const depositCollected = paymentTotal(paymentRowsForDraft.filter(isDepositPayment));
+  const depositCollected = paymentTotal(
+    (Array.isArray(draft.payments) ? draft.payments.map(normalizePaymentDraft) : []).filter(isDepositPayment)
+  );
+  const depositPaymentAmount = roundMoney(draft.deposit);
+  const remainingDeposit = roundMoney(depositPaymentAmount - depositCollected);
+  const dueAfterDeposit = Math.max(0, total - depositPaymentAmount);
+  const depositExceedsTotal = depositPaymentAmount - total > 0.005;
   const hasDeposit = depositCollected >= 0.01;
   const hasPaymentActivity = paidTotal >= 0.01 || hasDeposit;
   const repairFieldsComplete = !repairRequiredFieldsMissing(draft, data.clients);
@@ -4526,6 +4535,17 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const paymentChange = Math.max(0, roundMoney(paymentReceivedAmount - due));
   const paymentAmountMissing = paymentConfirm === "payment" && paymentReceivedAmount < 0.01;
   const paymentWillComplete = !isFirstPayment && paymentRecordAmount >= 0.01 && paidTotal + paymentRecordAmount + 0.005 >= total;
+  const canRecordDepositPayment = total >= 0.01 && depositPaymentAmount >= 0.01 && remainingDeposit >= 0.01 && !depositExceedsTotal && repairFieldsComplete;
+  const canRecordFinalPayment = due >= 0.01 && repairFieldsComplete;
+  const canStartPaidWarranty = due < 0.01 && repairFieldsComplete && !isPickedUpRepairStatus(draft.status);
+  const depositPaymentDisabledReason = !repairFieldsComplete ? t("requiredRepairFields") : total < 0.01 ? t("paymentNoPendingAmount") : depositPaymentAmount < 0.01 ? t("depositPaymentRequired") : depositExceedsTotal ? t("depositPaymentExceedsTotal") : remainingDeposit < 0.01 ? t("paymentNoPendingAmount") : "";
+  const finalPaymentDisabledReason = !repairFieldsComplete ? t("requiredRepairFields") : due < 0.01 ? t("paymentNoPendingAmount") : "";
+  const finalPaymentReceivedAmount = roundMoney(finalPaymentReceived);
+  const finalPaymentChange = Math.max(0, roundMoney(finalPaymentReceivedAmount - due));
+  const finalPaymentReceivedInsufficient = paymentConfirm === "final" && finalPaymentReceivedAmount + 0.005 < due;
+  const depositPaymentReceivedAmount = roundMoney(depositPaymentReceived);
+  const depositPaymentChange = Math.max(0, roundMoney(depositPaymentReceivedAmount - remainingDeposit));
+  const depositPaymentReceivedInsufficient = paymentConfirm === "deposit" && depositPaymentReceivedAmount + 0.005 < remainingDeposit;
   const costTotal = repairCostAmount(draft);
   const profit = total - costTotal;
   const discountPercentValue = subtotal > 0 ? roundMoney((parseMoneyInput(draft.discountAmount) / subtotal) * 100) : 0;
@@ -4748,8 +4768,93 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const cancelPaymentConfirm = () => {
     setPaymentConfirm("");
     setPaymentReceived("");
+    setFinalPaymentReceived("");
+    setDepositPaymentReceived("");
     setDepositTargetAmount("");
     setPendingPaidRepair(null);
+  };
+
+  const recordDepositPayment = () => {
+    const depositAmount = roundMoney(draft.deposit);
+    if (repairRequiredFieldsMissing(draft, data.clients)) return toast(t("requiredRepairFields"));
+    if (total < 0.01) return toast(t("paymentNoPendingAmount"));
+    if (depositAmount < 0.01) return toast(t("depositPaymentRequired"));
+    if (depositAmount - total > 0.005) return toast(t("depositPaymentExceedsTotal"));
+    if (remainingDeposit < 0.01) return toast(t("paymentNoPendingAmount"));
+    setDepositPaymentReceived(String(roundMoney(remainingDeposit).toFixed(2)));
+    setPaymentConfirm("deposit");
+  };
+
+  const executeDepositPayment = async () => {
+    if (depositPaymentReceivedAmount + 0.005 < remainingDeposit) return toast(t("finalPaymentInsufficient"));
+    setPaymentConfirm("");
+    setDepositPaymentReceived("");
+    const printWindow = openPrintWindow();
+    const selectedMethod = ["cash", "card"].includes(draft.paymentMethod) ? draft.paymentMethod : "cash";
+    const payments = paymentsForDraftWithAdjustments(draft, t, selectedMethod);
+    const nextPaidTotal = paymentTotal(payments);
+    const depositDraft = { ...draft, payments, deposit: nextPaidTotal };
+    setRepairDraft(depositDraft);
+    const result = await saveRepair(depositDraft, { stayOnPage: true, deferNavigation: true });
+    if (!result) {
+      printWindow?.close?.();
+      return;
+    }
+    const savedRepair = result.repair || depositDraft;
+    const savedClient = result.client || clientById(data, savedRepair.clientId);
+    const savedSubtotal = repairAmount(savedRepair);
+    const savedTotal = chargeAmount(savedRepair);
+    const savedDue = Math.max(0, savedTotal - repairPaidAmount(savedRepair));
+    const savedPublicUrl = savedRepair.publicToken ? buildPublicStatusUrl(data.settings, savedRepair.publicToken) : publicUrl;
+    const printed = await printRepair("receipt", savedRepair, savedClient, { subtotal: savedSubtotal, total: savedTotal, due: savedDue, qrDataUrl: "", publicUrl: savedPublicUrl, settings: data.settings, printWindow });
+    if (depositDraft.id === "new" && savedRepair.id) navigate(`/dashboard/repairs/${savedRepair.id}`, { force: true });
+    toast(printed ? t("paymentRecorded") : t("paymentRecordedPrintFailed"));
+  };
+
+  const recordPaymentAndClose = () => {
+    if (repairRequiredFieldsMissing(draft, data.clients)) return toast(t("requiredRepairFields"));
+    if (due < 0.01) return toast(t("paymentNoPendingAmount"));
+    setFinalPaymentReceived(String(roundMoney(due).toFixed(2)));
+    setPaymentConfirm("final");
+  };
+
+  const startPaidWarranty = async () => {
+    if (!canStartPaidWarranty) return;
+    const paidDraft = buildUpdatedDraft(draft, "status", "已取走");
+    setRepairDraft(paidDraft);
+    const result = await saveRepair(paidDraft, { stayOnPage: true, deferNavigation: true });
+    if (result) toast(t("repairSaved"));
+  };
+
+  const executeFinalPayment = async () => {
+    const receivedAmount = roundMoney(finalPaymentReceived);
+    if (receivedAmount + 0.005 < due) return toast(t("finalPaymentInsufficient"));
+    setPaymentConfirm("");
+    setFinalPaymentReceived("");
+    const printWindow = openPrintWindow();
+    const existingPayments = paymentsForDraftWithAdjustments(draft, t);
+    const recordedPaid = paymentTotal(existingPayments);
+    const finalDue = Math.max(0, total - recordedPaid);
+    const selectedMethod = ["cash", "card"].includes(draft.paymentMethod) ? draft.paymentMethod : "cash";
+    const nextPayments = finalDue >= 0.01
+      ? [...existingPayments, { id: id(), amount: finalDue, method: selectedMethod, note: t("finalPayment"), paidAt: formatDateTime(new Date()), createdBy: "" }]
+      : existingPayments;
+    const nextPaidTotal = paymentTotal(nextPayments);
+    const paidDraft = buildUpdatedDraft({ ...draft, payments: nextPayments, deposit: nextPaidTotal }, "status", "已取走");
+    setRepairDraft(paidDraft);
+    const result = await saveRepair(paidDraft, { stayOnPage: true, deferNavigation: paidDraft.id === "new" });
+    if (!result) {
+      printWindow?.close?.();
+      return;
+    }
+    const savedRepair = result.repair || paidDraft;
+    const savedClient = result.client || clientById(data, savedRepair.clientId);
+    const savedSubtotal = repairAmount(savedRepair);
+    const savedTotal = chargeAmount(savedRepair);
+    const savedPublicUrl = savedRepair.publicToken ? buildPublicStatusUrl(data.settings, savedRepair.publicToken) : publicUrl;
+    const printed = await printRepair("receipt", savedRepair, savedClient, { subtotal: savedSubtotal, total: savedTotal, due: 0, qrDataUrl: "", publicUrl: savedPublicUrl, settings: data.settings, printWindow });
+    if (paidDraft.id === "new" && savedRepair.id) navigate(`/dashboard/repairs/${savedRepair.id}`, { force: true });
+    toast(printed ? t("paymentRecorded") : t("paymentRecordedPrintFailed"));
   };
 
   const openDepositDialog = () => {
@@ -5234,54 +5339,42 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
           </div>
           <div className="price-payment-layout">
             <section className="payment-card deposit-card">
-              <div className="payment-entry-summary">
-                <span>{t("paidAmount")}</span>
-                <b>{money(paidTotal)}</b>
-              </div>
+              <label className="deposit-entry">
+                <span>{t("deposit")}</span>
+                <div className="currency-input">
+                  <span>€</span>
+                  <Input type="number" value={draft.deposit} onChange={(event) => updateDraft("deposit", event.target.value)} />
+                </div>
+              </label>
               <div className="pending-after-deposit">
                 <WalletCards {...ICON} />
-                <span>{t("due")}</span>
-                <b>{money(due)}</b>
-              </div>
-              <div className="pending-after-deposit">
-                <Banknote {...ICON} />
-                <span>{t("depositPayment")}</span>
-                <b>{money(depositCollected)}</b>
+                <span>{t("dueAfterDeposit")}</span>
+                <b>{money(dueAfterDeposit)}</b>
               </div>
               <PaymentMethodPicker value={["cash", "card"].includes(draft.paymentMethod) ? draft.paymentMethod : "cash"} onChange={(value) => updateDraft("paymentMethod", value)} t={t} />
-              <ActionSurface
-                className="deposit-payment-button"
-                disabled={!canManageDeposit}
-                title={depositDisabledReason}
-                onClick={openDepositDialog}
-              >
-                <span>{depositButtonLabel}</span>
-              </ActionSurface>
-              <small className="paid-close-helper">{depositButtonHelper}</small>
-              <PaymentHistory payments={paymentRowsForDraft} t={t} lang={lang} />
+              <button type="button" className={`deposit-payment-button ${due < 0.01 ? "paid-in-full" : ""}`} disabled={!canRecordDepositPayment} title={depositPaymentDisabledReason} onClick={recordDepositPayment}>
+                <span>{t("recordDepositPayment")}</span>
+              </button>
+              <small className="paid-close-helper">{t("depositPaidHelper")}</small>
+              <PaymentHistory payments={draft.payments} t={t} lang={lang} />
             </section>
             <section className="payment-card totals-card">
               <div className="totals-rows totals-muted-rows">
                 <div className="totals-line totals-muted"><span>{t("costAmount").replace(" €", "")}</span><b>{money(costTotal)}</b></div>
                 <div className="totals-line totals-muted"><span>{t("profitAmount")}</span><b className={profit < 0 ? "negative" : ""}>{money(profit)}</b></div>
               </div>
-              <FormControlLabel className="discount-percent-field">
+              <label className="discount-percent-field">
                 <span>{t("discountPercent")}</span>
                 <Input type="number" value={Number.isFinite(discountPercentValue) ? discountPercentValue : 0} onChange={(event) => updateDiscountPercent(event.target.value)} />
-              </FormControlLabel>
+              </label>
               <div className="totals-divider" />
               <div className="totals-line totals-main"><span>{t("total")}</span><b>{money(total)}</b></div>
-              <div className="totals-line totals-deposit"><span>{t("paidAmount")}</span><b>- {money(paidTotal)}</b></div>
+              <div className="totals-line totals-deposit"><span>{t("deposit").replace(" €", "")}</span><b>- {money(paidTotal)}</b></div>
               <div className="totals-line totals-due"><span>{t("due")}</span><b>{money(due)}</b></div>
-              <ActionSurface
-                className={`paid-close-button ${isPaidInFull ? "paid-warranty-button" : ""} ${isPaidInFull && isPickedUp ? "paid-state-button" : ""}`}
-                disabled={!isPaidInFull && !canRecordPayment}
-                title={paidCloseTitle}
-                onClick={isPaidInFull ? (isPickedUp ? undefined : () => markPaidRepairPickedUp({ printKind: isWarrantyDraft ? "warranty" : "repair" })) : openPaymentDialog}
-              >
-                <span>{paidCloseLabel}</span>
-              </ActionSurface>
-              <small className="paid-close-helper">{paidCloseHelper}</small>
+              <button type="button" className={`paid-close-button ${canStartPaidWarranty ? "paid-warranty-button" : ""}`} disabled={!canRecordFinalPayment && !canStartPaidWarranty} title={canStartPaidWarranty ? t("paidWarrantyHelper") : finalPaymentDisabledReason} onClick={canStartPaidWarranty ? startPaidWarranty : recordPaymentAndClose}>
+                <span>{canStartPaidWarranty ? t("paidWarrantyButton") : t("finalPaymentButton")}</span>
+              </button>
+              <small className="paid-close-helper">{canStartPaidWarranty ? t("paidWarrantyHelper") : t("paidCloseHelper")}</small>
               <div className="receipt-send-actions">
                 <ActionSurface
                   as="a"
@@ -5302,6 +5395,9 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
                   <Download size={16} strokeWidth={1.75} />
                   <span>{t("receiptImage")}</span>
                 </ActionSurface>
+              </div>
+              <div className="price-save-actions">
+                <Button className="repair-save-action-button" onClick={() => saveRepair()} disabled={saveDisabledByLock} title={saveDisabledByLock ? t("orderLockedHint") : ""}>{existing ? t("save") : t("create")}</Button>
               </div>
             </section>
           </div>
@@ -5352,6 +5448,52 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
       </div>
       </fieldset>
       {signatureOpen && !orderLocked && showSignatureSection ? <SignatureDialog draft={draft} setRepairDraft={setRepairDraft} close={() => setSignatureOpen(false)} t={t} /> : null}
+      <Dialog open={paymentConfirm === "deposit"} onOpenChange={(open) => { if (!open) cancelPaymentConfirm(); }} title={t("confirmTitle")} contentClassName="confirm-dialog-content">
+        <DialogBody className="confirm-dialog final-payment-dialog">
+          <p className="confirm-dialog-message">{t("depositPaidConfirm")}</p>
+          <FormControlLabel className="final-payment-received-field">
+            <span>{t("finalPaymentReceiveAmount")}</span>
+            <Input
+              type="number"
+              value={depositPaymentReceived}
+              onChange={(event) => setDepositPaymentReceived(event.target.value)}
+            />
+          </FormControlLabel>
+          <div className="final-payment-summary">
+            <div><span>{t("finalPaymentDueAmount")}</span><b>{money(remainingDeposit)}</b></div>
+            <div><span>{t("finalPaymentReceiveAmount").replace(" €", "")}</span><b>{money(depositPaymentReceivedAmount)}</b></div>
+            <div className={depositPaymentChange > 0 ? "positive" : ""}><span>{t("finalPaymentChangeAmount")}</span><b>{money(depositPaymentChange)}</b></div>
+          </div>
+          {depositPaymentReceivedInsufficient ? <div className="final-payment-error">{t("finalPaymentInsufficient")}</div> : null}
+          <DialogFooter>
+            <Button variant="outline" type="button" onClick={cancelPaymentConfirm}>{t("cancel")}</Button>
+            <Button type="button" disabled={depositPaymentReceivedInsufficient} onClick={executeDepositPayment}>{t("confirmAction")}</Button>
+          </DialogFooter>
+        </DialogBody>
+      </Dialog>
+      <Dialog open={paymentConfirm === "final"} onOpenChange={(open) => { if (!open) cancelPaymentConfirm(); }} title={t("confirmTitle")} contentClassName="confirm-dialog-content">
+        <DialogBody className="confirm-dialog final-payment-dialog">
+          <p className="confirm-dialog-message">{t("paidConfirm")}</p>
+          <FormControlLabel className="final-payment-received-field">
+            <span>{t("finalPaymentReceiveAmount")}</span>
+            <Input
+              type="number"
+              value={finalPaymentReceived}
+              onChange={(event) => setFinalPaymentReceived(event.target.value)}
+            />
+          </FormControlLabel>
+          <div className="final-payment-summary">
+            <div><span>{t("finalPaymentDueAmount")}</span><b>{money(due)}</b></div>
+            <div><span>{t("finalPaymentReceiveAmount").replace(" €", "")}</span><b>{money(finalPaymentReceivedAmount)}</b></div>
+            <div className={finalPaymentChange > 0 ? "positive" : ""}><span>{t("finalPaymentChangeAmount")}</span><b>{money(finalPaymentChange)}</b></div>
+          </div>
+          {finalPaymentReceivedInsufficient ? <div className="final-payment-error">{t("finalPaymentInsufficient")}</div> : null}
+          <DialogFooter>
+            <Button variant="outline" type="button" onClick={cancelPaymentConfirm}>{t("cancel")}</Button>
+            <Button type="button" disabled={finalPaymentReceivedInsufficient} onClick={executeFinalPayment}>{t("confirmAction")}</Button>
+          </DialogFooter>
+        </DialogBody>
+      </Dialog>
       <Dialog open={paymentConfirm === "paid-adjust"} onOpenChange={(open) => { if (!open) cancelPaymentConfirm(); }} title={t("paymentAdjustTitle")} contentClassName="confirm-dialog-content payment-dialog-content">
         <DialogBody className="confirm-dialog final-payment-dialog payment-calculator-dialog">
           <p className="confirm-dialog-message">{t("paymentAdjustHelper")}</p>
@@ -7030,17 +7172,23 @@ function dateInRange(value, start, end) {
 
 function paymentsForDraftWithAdjustments(draft, t = makeT("zh"), depositMethod = "ledger") {
   const payments = Array.isArray(draft.payments) ? draft.payments.map(normalizePaymentDraft).filter((payment) => Math.abs(payment.amount) >= 0.005) : [];
-  if (payments.length) return payments;
-  const legacyPaid = parseMoneyInput(draft.deposit);
-  if (legacyPaid < 0.01) return [];
-  return [{
-    id: `legacy-${draft.id || id()}`,
-    amount: legacyPaid,
-    method: depositMethod || "ledger",
-    note: t("depositPayment"),
-    paidAt: draft.repairTime || draft.createdAt || formatDateTime(new Date()),
-    createdBy: ""
-  }];
+  const desiredPaid = parseMoneyInput(draft.deposit);
+  const depositPayments = payments.filter(isDepositPayment);
+  const preservedPayments = payments.filter((payment) => !isDepositPayment(payment) && !isManualPaymentAdjustment(payment));
+  const desiredDeposit = Math.max(0, roundMoney(desiredPaid - paymentTotal(preservedPayments)));
+  if (desiredDeposit < 0.01) return preservedPayments;
+  const baseDeposit = depositPayments[0] || {};
+  return [
+    {
+      id: baseDeposit.id || id(),
+      amount: desiredDeposit,
+      method: baseDeposit.method || depositMethod || "ledger",
+      note: t("depositPayment"),
+      paidAt: baseDeposit.paidAt || formatDateTime(new Date()),
+      createdBy: baseDeposit.createdBy || ""
+    },
+    ...preservedPayments
+  ];
 }
 
 function paymentNote(payment = {}) {
