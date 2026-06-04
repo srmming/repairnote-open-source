@@ -4377,10 +4377,15 @@ function AttributeSelectionPanel({ value, onChange, items = [], lang = "zh", t }
       </div>
       <div className="attribute-options-list">
         {visibleItems.length ? visibleItems.map((item) => (
-          <label key={item.id || item.label} className="attribute-option">
-            <Checkbox checked={selectedKeys.has(item.label.toLowerCase())} onChange={() => toggleValue(item.label)} />
+          <button
+            key={item.id || item.label}
+            type="button"
+            className={`attribute-option${selectedKeys.has(item.label.toLowerCase()) ? " active" : ""}`}
+            aria-pressed={selectedKeys.has(item.label.toLowerCase())}
+            onClick={() => toggleValue(item.label)}
+          >
             <span className="attribute-option-label">{item.label}</span>
-          </label>
+          </button>
         )) : <div className="attribute-options-empty">{t("noData")}</div>}
       </div>
       <div className="attribute-select-footer">
