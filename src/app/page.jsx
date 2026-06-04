@@ -1965,6 +1965,19 @@ function ThemeToggleButton({ theme, onThemeChange, t, compact = false, className
 
 function TopbarActions({ route, data, saveData, saveRepairRecord, deleteRepairRecord, navigate, repairDraft, repairTopbarSave, toast, lang, t }) {
   const path = route.split("?")[0];
+  const renderRepairSaveButton = () => repairTopbarSave ? (
+    <Button
+      className="repair-save-topbar-button"
+      disabled={repairTopbarSave.disabled}
+      title={repairTopbarSave.title || ""}
+      onClick={() => repairTopbarSave.onSave?.()}
+    >
+      {repairTopbarSave.label || t("save")}
+    </Button>
+  ) : null;
+  if (path === "/dashboard/repairs/new" || path === "/dashboard/warranties/new") {
+    return repairTopbarSave ? <div className="topbar-actions">{renderRepairSaveButton()}</div> : null;
+  }
   if (
     (path.startsWith("/dashboard/repairs/") && path !== "/dashboard/repairs/new")
     || (path.startsWith("/dashboard/warranties/") && path !== "/dashboard/warranties/new")
@@ -2039,16 +2052,7 @@ function TopbarActions({ route, data, saveData, saveRepairRecord, deleteRepairRe
         {!isWarranty ? <Button variant="outline" type="button" onClick={createWarrantyOrder}><ShieldCheck {...ICON_SM} /> {t("addWarrantyOrder")}</Button> : null}
         <Button variant="outline" onClick={() => printRepair("receipt", draft, selectedClient, { subtotal, total, due, qrDataUrl: "", publicUrl, settings: data.settings })}>{warrantyPrint ? t("printWarrantyReceipt") : t("printReceipt")}</Button>
         <Button variant="outline" onClick={() => printRepair("a4", draft, selectedClient, { subtotal, total, due, qrDataUrl: "", publicUrl, settings: data.settings })}>{warrantyPrint ? t("printWarrantyA4") : t("printA4")}</Button>
-        {repairTopbarSave ? (
-          <Button
-            className="repair-save-topbar-button"
-            disabled={repairTopbarSave.disabled}
-            title={repairTopbarSave.title || ""}
-            onClick={() => repairTopbarSave.onSave?.()}
-          >
-            {repairTopbarSave.label || t("save")}
-          </Button>
-        ) : null}
+        {renderRepairSaveButton()}
         <Button variant="danger" disabled={orderLocked} title={orderLocked ? t("orderLockedHint") : ""} onClick={deleteRepair}><Trash2 {...ICON_SM} /> {t("delete")}</Button>
       </div>
     );
@@ -4705,7 +4709,6 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const saveDisabledByLock = orderLocked && !draftHasPendingSave;
   useEffect(() => {
     if (!registerRepairTopbar) return undefined;
-    if (!existing) return registerRepairTopbar(null);
     return registerRepairTopbar({
       onSave: () => saveRepairRef.current(),
       disabled: saveDisabledByLock,
@@ -5300,11 +5303,6 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
                   <span>{t("receiptImage")}</span>
                 </ActionSurface>
               </div>
-              {!existing ? (
-                <div className="price-save-actions">
-                  <Button className="repair-save-action-button" onClick={() => saveRepair()} disabled={saveDisabledByLock} title={saveDisabledByLock ? t("orderLockedHint") : ""}>{t("create")}</Button>
-                </div>
-              ) : null}
             </section>
           </div>
           {showQrNoticeSection ? <div className="qr-panel">
@@ -6636,6 +6634,14 @@ function repairContentLabel(repair, lang = "zh") {
   return localizeText(repair.issue || repair.warrantyReason, lang);
 }
 
+function repairPrintProblemLabel(repair, lang = "zh") {
+  const properties = splitPropertyTokens(repair?.properties || "")
+    .map((item) => localizeText(item, lang).trim())
+    .filter(Boolean)
+    .join(lang === "es" ? ", " : "，");
+  return properties || repairContentLabel(repair, lang);
+}
+
 function clientById(data, clientId) {
   return data.clients.find((client) => client.id === clientId) || EMPTY_CLIENT;
 }
@@ -7626,7 +7632,7 @@ async function createReceiptImageDownload(repair, client, { total = 0, paidTotal
     const t = makeT(lang);
     const shopName = String(settings?.shopName || "").trim() || APP_DISPLAY_NAME;
     const device = [repair?.brand, repair?.model].filter(Boolean).join(" / ");
-    const description = repairContentLabel(repair, lang) || repair?.issue || "";
+    const description = repairPrintProblemLabel(repair, lang) || repair?.issue || "";
     const items = Array.isArray(repair?.items) ? repair.items.filter((item) => item?.name) : [];
     const qrSource = qrDataUrl || (publicUrl ? await QRCode.toDataURL(publicUrl, { width: 180, margin: 1 }).catch(() => "") : "");
     const qrImage = qrSource ? await loadCanvasImage(qrSource).catch(() => null) : null;
@@ -7969,12 +7975,13 @@ function buildPrintHtml(mode, repair, client, { subtotal, total, due, qrDataUrl,
   const acceptedTerms = narrow ? t("acceptedTermsCompact") : t("acceptedTerms");
   const showFinalPaymentLine = !printsWarrantyDocument && normalizeStatus(repair.status) !== "已取走";
   const repairDescription = repairContentLabel(repair, lang) || repair.issue || "";
+  const repairProblem = repairPrintProblemLabel(repair, lang) || "-";
   const imeiPrintLine = repair.imei ? `<div>${escapeHtml(repair.imei || "")}</div>` : "";
   const clientInfo = narrow
     ? `<div>${t("name")}: ${escapeHtml(client.name || repair.clientName || "")}</div><div>${t("phone")}: ${escapeHtml(client.phone || repair.phone || "")}</div>`
     : `<div>${t("name")}: ${escapeHtml(client.name || repair.clientName || "")}</div><div>${t("phone")}: ${escapeHtml(client.phone || repair.phone || "")}</div><div>${t("address")}: ${escapeHtml(client.address || repair.address || "")}</div><div>${t("identity")}: ${escapeHtml(client.identity || repair.identity || "")}</div>`;
   const repairInfo = narrow
-    ? `<div>${t("date")}: ${escapeHtml(repair.repairTime || "")}</div><div>${t("status")}: ${escapeHtml(statusLabel(repair.status || "", lang))}</div><div>${t("device")}: ${escapeHtml(repair.brand || "")} ${escapeHtml(repair.model || "")}</div>${imeiPrintLine}<div>${t("printProblem")}: ${escapeHtml(repairContentLabel(repair, lang) || "-")}</div>`
+    ? `<div>${t("date")}: ${escapeHtml(repair.repairTime || "")}</div><div>${t("status")}: ${escapeHtml(statusLabel(repair.status || "", lang))}</div><div>${t("device")}: ${escapeHtml(repair.brand || "")} ${escapeHtml(repair.model || "")}</div>${imeiPrintLine}<div>${t("printProblem")}: ${escapeHtml(repairProblem)}</div>`
     : `<div>${t("date")}: ${escapeHtml(repair.repairTime || "")}</div><div>${t("status")}: ${escapeHtml(statusLabel(repair.status || "", lang))}</div><div>${t("device")}: ${escapeHtml(repair.brand || "")} ${escapeHtml(repair.model || "")}</div>${imeiPrintLine}<div>${t("passwordPrint")}: ${escapeHtml(repair.passwordType === "Contraseña" ? repair.passwordText : repair.passwordType || "")}</div>${technicianLine}${printWarrantyInfo}`;
   const repairLine = narrow ? "" : `<div class="repair-line"><span>${escapeHtml(repairDescription)}</span><b>${money(total)}</b></div>`;
   const sheetContent = `
