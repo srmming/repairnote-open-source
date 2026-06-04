@@ -462,6 +462,7 @@ const uiText = {
     depositTargetAmount: "目标订金 €",
     depositAdjustmentAmount: "调整差额",
     depositAdjustmentEntry: "订金调整",
+    depositAdjustmentTo: "订金调整至",
     depositAdjustmentNone: "目标订金与当前相同",
     depositAdjustmentInvalid: "目标订金无效",
     depositAdjustmentExceedsPaid: "调整后总收款不能超过订单总价",
@@ -474,6 +475,7 @@ const uiText = {
     paymentCurrentAmount: "当前已收",
     paymentTargetAmount: "目标已收 €",
     paidAdjustmentEntry: "收款调整",
+    paidAdjustmentTo: "收款调整至",
     paidAdjustmentRecorded: "收款已调整",
     warrantyPaymentChargeRequired: "请先勾选「需要收费」并添加收费项目",
     warrantyMarkDoneButton: "标记完成",
@@ -966,6 +968,7 @@ const uiText = {
     depositTargetAmount: "Depósito objetivo €",
     depositAdjustmentAmount: "Diferencia",
     depositAdjustmentEntry: "Ajuste de depósito",
+    depositAdjustmentTo: "Depósito ajustado a",
     depositAdjustmentNone: "El depósito objetivo es igual al actual",
     depositAdjustmentInvalid: "Depósito objetivo no válido",
     depositAdjustmentExceedsPaid: "El total cobrado no puede superar el total de la orden",
@@ -978,6 +981,7 @@ const uiText = {
     paymentCurrentAmount: "Cobrado actual",
     paymentTargetAmount: "Objetivo cobrado €",
     paidAdjustmentEntry: "Ajuste de cobro",
+    paidAdjustmentTo: "Cobro ajustado a",
     paidAdjustmentRecorded: "Cobro ajustado",
     warrantyPaymentChargeRequired: "Marca «Con cargo» y añade líneas con importe",
     warrantyMarkDoneButton: "Marcar finalizado",
@@ -4770,7 +4774,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
       id: id(),
       amount: depositAdjustmentDiff,
       method: selectedMethod,
-      note: t("depositAdjustmentEntry"),
+      note: `${t("depositAdjustmentTo")} ${money(depositTargetValue)}`,
       paidAt: formatDateTime(new Date()),
       createdBy: ""
     }];
@@ -4796,7 +4800,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
       id: id(),
       amount: paidAdjustmentDiff,
       method: selectedMethod,
-      note: t("paidAdjustmentEntry"),
+      note: `${t("paidAdjustmentTo")} ${money(depositTargetValue)}`,
       paidAt: formatDateTime(new Date()),
       createdBy: ""
     }];
@@ -4855,6 +4859,20 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
     event.preventDefault();
     if (paymentReceivedAmount < 0.01) return;
     executePayment();
+  };
+
+  const confirmPaidAdjustmentOnEnter = (event) => {
+    if (event.key !== "Enter" || event.isComposing) return;
+    event.preventDefault();
+    if (!depositTargetValid || Math.abs(paidAdjustmentDiff) < 0.005 || depositTargetValue - total > 0.005 || depositTargetValue < -0.005) return;
+    executePaidAdjustment();
+  };
+
+  const confirmDepositAdjustmentOnEnter = (event) => {
+    if (event.key !== "Enter" || event.isComposing) return;
+    event.preventDefault();
+    if (!depositTargetValid || Math.abs(depositAdjustmentDiff) < 0.005 || depositTargetValue - total > 0.005 || roundMoney(paidTotal + depositAdjustmentDiff) - total > 0.005 || roundMoney(paidTotal + depositAdjustmentDiff) < -0.005) return;
+    executeDepositAdjustment();
   };
 
   const buildPaymentDraft = (baseDraft, amount, method) => {
@@ -5336,6 +5354,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
               inputMode="decimal"
               value={depositTargetAmount}
               onChange={(event) => setDepositTargetAmount(event.target.value)}
+              onKeyDown={confirmPaidAdjustmentOnEnter}
             />
           </FormControlLabel>
           <div className="final-payment-summary">
@@ -5370,6 +5389,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
               inputMode="decimal"
               value={depositTargetAmount}
               onChange={(event) => setDepositTargetAmount(event.target.value)}
+              onKeyDown={confirmDepositAdjustmentOnEnter}
             />
           </FormControlLabel>
           <div className="final-payment-summary">
@@ -5439,9 +5459,20 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
 }
 
 function paymentsForHistoryDisplay(payments = []) {
+  let runningTotal = 0;
+  let runningDeposit = 0;
   return (Array.isArray(payments) ? payments.map(normalizePaymentDraft) : [])
     .filter((payment) => Math.abs(payment.amount) >= 0.005)
-    .sort((left, right) => String(left.paidAt || "").localeCompare(String(right.paidAt || "")));
+    .sort((left, right) => String(left.paidAt || "").localeCompare(String(right.paidAt || "")))
+    .map((payment) => {
+      const depositAdjustment = isDepositAdjustment(payment);
+      const paidAdjustment = isPaidAdjustment(payment);
+      runningTotal = roundMoney(runningTotal + payment.amount);
+      if (isDepositPayment(payment) || depositAdjustment) runningDeposit = roundMoney(runningDeposit + payment.amount);
+      if (depositAdjustment) return { ...payment, displayAmount: runningDeposit };
+      if (paidAdjustment) return { ...payment, displayAmount: runningTotal };
+      return payment;
+    });
 }
 
 function PaymentHistory({ payments = [], t, lang = "zh" }) {
@@ -5452,7 +5483,7 @@ function PaymentHistory({ payments = [], t, lang = "zh" }) {
       {rows.length ? rows.map((payment) => (
         <div className="payment-history-row" key={payment.id}>
           <span>{formatPaymentDate(payment.paidAt, lang)}</span>
-          <b>{money(payment.amount)}</b>
+          <b>{money(payment.displayAmount ?? payment.amount)}</b>
           <em>{paymentDisplayNote(payment, t, lang) || t("paymentEntry")}</em>
         </div>
       )) : <Empty compact>{t("noPayments")}</Empty>}
@@ -6963,12 +6994,27 @@ function paymentNote(payment = {}) {
   return String(payment.note || "").trim().toLowerCase();
 }
 
+function isPaidAdjustment(payment = {}) {
+  const note = paymentNote(payment);
+  return note.includes("收款调整") || note.includes("ajuste de cobro") || note.includes("cobro ajustado");
+}
+
+function isDepositAdjustment(payment = {}) {
+  const note = paymentNote(payment);
+  return note.includes("订金调整") || note.includes("ajuste de depósito") || note.includes("ajuste de deposito") || note.includes("depósito ajustado") || note.includes("deposito ajustado");
+}
+
+function adjustmentTargetText(note = "", label = "") {
+  const target = String(note).match(/(?:至|a|->)\s*(-?\d+(?:[.,]\d{1,2})?\s*€?)/i)?.[1]?.trim();
+  return target ? `${label} ${target}` : label;
+}
+
 function paymentDisplayNote(payment = {}, t = makeT("zh"), lang = "zh") {
   const note = String(payment.note || "").trim();
-  const normalized = note.toLowerCase();
   if (!note) return "";
-  if (normalized.includes("收款调整") || normalized.includes("ajuste de cobro")) return t("paidAdjustmentEntry");
-  if (normalized.includes("订金调整") || normalized.includes("ajuste de depósito") || normalized.includes("ajuste de deposito")) return t("depositAdjustmentEntry");
+  const normalized = note.toLowerCase();
+  if (isPaidAdjustment(payment)) return adjustmentTargetText(note, t("paidAdjustmentTo"));
+  if (isDepositAdjustment(payment)) return adjustmentTargetText(note, t("depositAdjustmentTo"));
   if (normalized.includes("订金") || normalized.includes("历史订金") || normalized.includes("depósito") || normalized.includes("deposito")) return t("depositPayment");
   if (normalized.includes("尾款") || normalized.includes("pago final")) return t("finalPayment");
   if (normalized.includes("手动收款调整")) return lang === "es" ? "Ajuste manual de cobro" : "手动收款调整";
@@ -6978,7 +7024,7 @@ function paymentDisplayNote(payment = {}, t = makeT("zh"), lang = "zh") {
 
 function isDepositPayment(payment = {}) {
   const note = paymentNote(payment);
-  return note.includes("订金") || note.includes("历史订金") || note.includes("depósito") || note.includes("deposito");
+  return !isDepositAdjustment(payment) && (note.includes("订金") || note.includes("历史订金") || note.includes("depósito") || note.includes("deposito"));
 }
 
 function isManualPaymentAdjustment(payment = {}) {
