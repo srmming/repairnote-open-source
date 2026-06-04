@@ -818,9 +818,33 @@ button:disabled {
 .repair-technician-cell {
   color: hsl(var(--foreground));
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+}
+
+.repair-technician-inline.technician-picker {
+  width: 100%;
+  min-width: 0;
+}
+
+.repair-technician-inline .picker-trigger {
+  width: 100%;
+  min-height: 1.875rem;
+  border-radius: 9999px;
+  background: hsl(var(--card) / 0.92);
+  font-weight: 700;
+}
+
+.repair-technician-inline .picker-trigger.has-value {
+  border-color: hsl(var(--border));
+  background: hsl(var(--muted) / 0.55);
+}
+
+.repair-technician-inline .picker-trigger .picker-label {
+  font-size: 0.75rem;
+}
+
+.repair-technician-inline .picker-menu {
+  min-width: 11rem;
 }
 
 .repair-issue-cell span {
@@ -2295,6 +2319,15 @@ button:disabled {
 .picker-option.active {
   background: hsl(var(--primary));
   color: hsl(var(--primary-foreground));
+}
+
+.picker-option.legacy-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.technician-picker.is-disabled .picker-trigger {
+  cursor: not-allowed;
 }
 
 .field .ui-select-wrap {
@@ -7108,7 +7141,8 @@ button:disabled {
   }
 
   .mobile-order-action-panel .ui-button,
-  .mobile-order-action-panel .ui-select-wrap {
+  .mobile-order-action-panel .ui-select-wrap,
+  .mobile-order-action-panel .technician-picker {
     width: 100%;
   }
 

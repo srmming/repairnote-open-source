@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import QRCode from "qrcode";
 import {
   AlertTriangle,
@@ -2460,7 +2461,6 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
               const cost = repairCostAmount(repair);
               const profit = amount - cost;
               const legacyTechnicianName = repair.technicianId ? "" : String(repair.technicianName || "").trim();
-              const technicianSelectValue = repair.technicianId || (legacyTechnicianName ? `legacy:${legacyTechnicianName}` : "");
               const rowTechnician = technicianById.get(repair.technicianId) || (legacyTechnicianName ? technicianByName.get(legacyTechnicianName.toLowerCase()) : null);
               const repairRoute = isWarranty ? `/dashboard/warranties/${repair.id}` : `/dashboard/repairs/${repair.id}`;
               return (
@@ -2473,7 +2473,6 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
                   profit={profit}
                   technician={rowTechnician}
                   technicianOptions={technicianOptions}
-                  technicianSelectValue={technicianSelectValue}
                   legacyTechnicianName={legacyTechnicianName}
                   route={repairRoute}
                   navigate={navigate}
@@ -2502,7 +2501,6 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
               const cost = repairCostAmount(repair);
               const profit = amount - cost;
               const legacyTechnicianName = repair.technicianId ? "" : String(repair.technicianName || "").trim();
-              const technicianSelectValue = repair.technicianId || (legacyTechnicianName ? `legacy:${legacyTechnicianName}` : "");
               const rowTechnician = technicianById.get(repair.technicianId) || (legacyTechnicianName ? technicianByName.get(legacyTechnicianName.toLowerCase()) : null);
               const contentLabel = repairContentLabel(repair, lang);
               const repairRoute = isWarranty ? `/dashboard/warranties/${repair.id}` : `/dashboard/repairs/${repair.id}`;
@@ -2510,11 +2508,18 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
                 <TableRow key={repair.id} className={`row-click ${isWarranty ? "order-row-warranty" : "order-row-repair"} ${rowTechnician ? "technician-marked-row" : ""}`} style={rowTechnician ? { "--technician-color": normalizeTechnicianColor(rowTechnician.color) } : undefined} onClick={() => navigate(repairRoute)}>
                   <TableCell data-label={t("ticket")}><div className="ticket-cell"><span>{repair.ticket}</span><OrderTypeBadge repair={repair} t={t} /></div></TableCell><TableCell data-label={t("clientName")}>{client.name}</TableCell><TableCell data-label={t("phone")}>{client.phone}</TableCell><TableCell data-label={t("brandModel")}>{repair.brand} / {repair.model}</TableCell><TableCell data-label={t("issue")} className="repair-issue-cell"><span title={contentLabel}>{contentLabel}</span></TableCell>
                   <TableCell data-label={t("assignedTechnician")} className="repair-technician-cell" onClick={(event) => event.stopPropagation()}>
-                    <Select className="technician-inline-select" value={technicianSelectValue} disabled={isOrderLocked(repair, data.settings)} onChange={(event) => setTechnician(repair.id, event.target.value)} style={{ width: "100%", height: 30 }}>
-                      <option value="">{t("unassignedTechnician")}</option>
-                      {legacyTechnicianName ? <option value={`legacy:${legacyTechnicianName}`}>{legacyTechnicianName}</option> : null}
-                      {technicianOptions.map((technician) => <option key={technician.id} value={technician.id}>{technician.name}</option>)}
-                    </Select>
+                    <TechnicianPicker
+                      className="repair-technician-inline"
+                      value={repair.technicianId || ""}
+                      legacyName={legacyTechnicianName}
+                      selectedTechnician={rowTechnician}
+                      technicians={technicianOptions}
+                      disabled={isOrderLocked(repair, data.settings)}
+                      placeholder={t("unassignedTechnician")}
+                      portal
+                      onChange={(value) => setTechnician(repair.id, value)}
+                      t={t}
+                    />
                   </TableCell>
                   <TableCell data-label={t("status")} onClick={(event) => event.stopPropagation()}>
                     <Select className={`status-select ${statusClassMap[normalizeStatus(repair.status)] || "status-reserva"}`} value={normalizeStatus(repair.status)} disabled={isOrderLocked(repair, data.settings)} onChange={(event) => setStatus(repair.id, event.target.value)} style={{ width: 118, height: 30 }}>{(isWarranty ? warrantyStatusOrder : statusOrder).map((status) => <option key={status} value={status}>{statusLabel(status, lang)}</option>)}</Select>
@@ -5613,24 +5618,86 @@ function CostQuickDialog({ open, onOpenChange, draft, setRepairDraft, t, lang = 
   );
 }
 
-function TechnicianPicker({ value, legacyName, selectedTechnician, technicians, onChange, t, className = "" }) {
+function TechnicianPicker({ value, legacyName, selectedTechnician, technicians, onChange, t, className = "", disabled = false, placeholder, portal = false }) {
   const [open, setOpen] = useState(false);
+  const [menuStyle, setMenuStyle] = useState(null);
   const rootRef = useRef(null);
-  const label = selectedTechnician?.name || legacyName || t("technician");
+  const triggerRef = useRef(null);
+  const label = selectedTechnician?.name || legacyName || placeholder || t("technician");
+  useEffect(() => {
+    if (!open || !portal) return;
+    const updateMenuPosition = () => {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setMenuStyle({
+        position: "fixed",
+        left: rect.left,
+        right: "auto",
+        top: rect.bottom + 6,
+        width: Math.max(rect.width, 176),
+        maxHeight: Math.max(120, window.innerHeight - rect.bottom - 18),
+        zIndex: 1000
+      });
+    };
+    updateMenuPosition();
+    window.addEventListener("resize", updateMenuPosition);
+    window.addEventListener("scroll", updateMenuPosition, true);
+    return () => {
+      window.removeEventListener("resize", updateMenuPosition);
+      window.removeEventListener("scroll", updateMenuPosition, true);
+    };
+  }, [open, portal]);
+
+  const menu = open ? (
+    <OptionMenu className={portal ? "picker-menu-portal" : ""} style={portal ? menuStyle : undefined}>
+      <OptionItem
+        active={!value && !legacyName}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => {
+          onChange("");
+          setOpen(false);
+        }}
+      >
+        {placeholder || t("technician")}
+      </OptionItem>
+      {legacyName && !selectedTechnician ? (
+        <OptionItem className="legacy-option" active disabled onMouseDown={(event) => event.preventDefault()}>
+          {legacyName}
+        </OptionItem>
+      ) : null}
+      {technicians.map((technician) => (
+        <OptionItem
+          key={technician.id}
+          active={technician.id === value}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
+            onChange(technician.id);
+            setOpen(false);
+          }}
+        >
+          <TechnicianColorDot technician={technician} /> {technician.name}
+        </OptionItem>
+      ))}
+    </OptionMenu>
+  ) : null;
 
   return (
     <div
       ref={rootRef}
-      className={`technician-picker ${className}`}
+      className={`technician-picker ${disabled ? "is-disabled" : ""} ${className}`}
       onBlur={(event) => {
         if (!rootRef.current?.contains(event.relatedTarget)) setOpen(false);
       }}
     >
       <Field
+        ref={triggerRef}
         as="button"
         type="button"
         className={`picker-trigger ${value || legacyName ? "has-value" : ""}`}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          if (!disabled) setOpen((current) => !current);
+        }}
+        disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
       >
@@ -5639,38 +5706,7 @@ function TechnicianPicker({ value, legacyName, selectedTechnician, technicians, 
         <span className="picker-label">{label}</span>
         <ChevronDown {...ICON_SM} />
       </Field>
-      {open ? (
-        <OptionMenu>
-          <OptionItem
-            active={!value && !legacyName}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => {
-              onChange("");
-              setOpen(false);
-            }}
-          >
-            {t("technician")}
-          </OptionItem>
-          {legacyName && !selectedTechnician ? (
-            <OptionItem active onMouseDown={(event) => event.preventDefault()} onClick={() => setOpen(false)}>
-              {legacyName}
-            </OptionItem>
-          ) : null}
-          {technicians.map((technician) => (
-            <OptionItem
-              key={technician.id}
-              active={technician.id === value}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => {
-                onChange(technician.id);
-                setOpen(false);
-              }}
-            >
-              <TechnicianColorDot technician={technician} /> {technician.name}
-            </OptionItem>
-          ))}
-        </OptionMenu>
-      ) : null}
+      {portal && menu && menuStyle && typeof document !== "undefined" ? createPortal(menu, document.body) : menu}
     </div>
   );
 }
@@ -6239,7 +6275,6 @@ function MobileRepairCard({
   profit = 0,
   technician = null,
   technicianOptions = [],
-  technicianSelectValue = "",
   legacyTechnicianName = "",
   route,
   navigate,
@@ -6303,11 +6338,18 @@ function MobileRepairCard({
               <Select className={`status-select ${statusClassMap[normalizeStatus(repair.status)] || "status-reserva"}`} value={normalizeStatus(repair.status)} disabled={locked} onChange={(event) => onStatusChange?.(repair.id, event.target.value)}>
                 {(isWarranty ? warrantyStatusOrder : statusOrder).map((status) => <option key={status} value={status}>{statusLabel(status, lang)}</option>)}
               </Select>
-              <Select className="technician-inline-select" value={technicianSelectValue} disabled={locked} onChange={(event) => onTechnicianChange?.(repair.id, event.target.value)}>
-                <option value="">{t("unassignedTechnician")}</option>
-                {legacyTechnicianName ? <option value={`legacy:${legacyTechnicianName}`}>{legacyTechnicianName}</option> : null}
-                {technicianOptions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-              </Select>
+              <TechnicianPicker
+                className="repair-technician-inline mobile-technician-picker"
+                value={repair.technicianId || ""}
+                legacyName={legacyTechnicianName}
+                selectedTechnician={technician}
+                technicians={technicianOptions}
+                disabled={locked}
+                placeholder={t("unassignedTechnician")}
+                portal
+                onChange={(value) => onTechnicianChange?.(repair.id, value)}
+                t={t}
+              />
               <Button size="sm" variant="outline" onClick={(event) => onItemsClick?.(event, repair)}><Menu {...ICON_SM} /> {t("operation")}</Button>
               <Button size="sm" variant="outline" onClick={openDetail}>{t("openOrder")}</Button>
             </>
