@@ -4850,6 +4850,13 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
     });
   };
 
+  const confirmPaymentOnEnter = (event) => {
+    if (event.key !== "Enter" || event.isComposing) return;
+    event.preventDefault();
+    if (paymentReceivedAmount < 0.01) return;
+    executePayment();
+  };
+
   const buildPaymentDraft = (baseDraft, amount, method) => {
     const existingPayments = paymentsForDraftWithAdjustments(baseDraft, t, method);
     const firstPayment = repairPaymentsForDisplay(baseDraft, t).length === 0;
@@ -5398,6 +5405,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
               type="number"
               value={paymentReceived}
               onChange={(event) => setPaymentReceived(event.target.value)}
+              onKeyDown={confirmPaymentOnEnter}
             />
           </FormControlLabel>
           <div className="final-payment-summary">
