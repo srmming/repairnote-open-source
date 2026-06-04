@@ -1,0 +1,239 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Staff {
+  id               String   @id @default(cuid())
+  name             String
+  username         String   @unique
+  email            String   @default("")
+  passwordHash     String   @db.VarChar(255)
+  isAdmin          Boolean  @default(false)
+  pagePermissions  Json
+  sessionTokenHash String?  @db.VarChar(255)
+  sessionExpiresAt DateTime?
+  sessions         StaffSession[]
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model StaffSession {
+  id        String   @id @default(cuid())
+  staffId   String
+  tokenHash String   @unique @db.VarChar(255)
+  expiresAt DateTime
+  staff     Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([staffId])
+  @@index([expiresAt])
+}
+
+model Client {
+  id        String   @id @default(cuid())
+  name      String
+  docType   String   @default("DNI")
+  identity  String   @default("")
+  email     String   @default("")
+  phone     String   @default("")
+  address   String   @db.Text
+  comment   String   @db.Text
+  level     String   @default("VIP")
+  repairs   Repair[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
+  @@index([phone])
+}
+
+model Brand {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  sortOrder Int      @default(0)
+  models    Model[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Model {
+  id        String   @id @default(cuid())
+  brandId   String
+  name      String
+  sortOrder Int      @default(0)
+  brand     Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([brandId])
+}
+
+model Service {
+  id          String   @id @default(cuid())
+  defaultName String   @db.Text
+  category    String   @default("")
+  zh          String   @db.Text
+  es          String   @db.Text
+  price       Decimal  @default(0) @db.Decimal(12, 2)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Part {
+  id          String   @id @default(cuid())
+  defaultName String   @db.Text
+  category    String   @default("")
+  zh          String   @db.Text
+  es          String   @db.Text
+  price       Decimal  @default(0) @db.Decimal(12, 2)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Technician {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  phone     String   @default("")
+  email     String   @default("")
+  color     String   @default("#16a34a")
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model AttributeGroup {
+  id         String      @id @default(cuid())
+  name       String      @unique
+  attributes Attribute[]
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+}
+
+model Attribute {
+  id          String         @id @default(cuid())
+  groupId     String
+  defaultName String
+  zh          String         @default("")
+  es          String         @default("")
+  sortOrder   Int            @default(0)
+  group       AttributeGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([groupId])
+}
+
+model Repair {
+  id              String       @id @default(cuid())
+  ticket          String       @unique
+  clientId        String
+  brand           String       @default("")
+  model           String       @default("")
+  properties      String       @db.Text
+  imei            String       @default("")
+  issue           String       @db.Text
+  internalNote    String       @db.Text
+  passwordType    String       @default("")
+  passwordText    String       @default("")
+  passwordPattern Json
+  status          String       @default("预定")
+  repairTime      String       @default("")
+  warrantyStart   String       @default("")
+  technicianId    String       @default("")
+  technicianName  String       @default("")
+  budget          Decimal      @default(0) @db.Decimal(12, 2)
+  deposit         Decimal      @default(0) @db.Decimal(12, 2)
+  paymentMethod   String       @default("none")
+  discountAmount  Decimal      @default(0) @db.Decimal(12, 2)
+  costAmount      Decimal      @default(0) @db.Decimal(12, 2)
+  frontPhoto      String       @db.LongText
+  backPhoto       String       @db.LongText
+  signatureDataUrl String      @db.LongText
+  signedAt        String       @default("")
+  publicToken     String       @unique @default(cuid())
+  orderType       String       @default("repair")
+  sourceRepairId  String       @default("")
+  warrantyReason  String       @db.Text
+  warrantyDiagnosis String     @db.Text
+  warrantyResolution String    @db.Text
+  warrantyChargeable Boolean   @default(false)
+  statusHistory   Json
+  notificationLog Json
+  searchText      String       @db.Text
+  ticketSort      BigInt       @default(0)
+  client          Client       @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  items           RepairItem[]
+  payments        Payment[]
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([clientId])
+  @@index([orderType])
+  @@index([sourceRepairId])
+  @@index([status])
+  @@index([repairTime])
+  @@index([createdAt])
+  @@index([ticketSort])
+  // 当前服务端搜索用 searchText 的子串匹配（LIKE，与界面“包含”语义一致）。
+  // 保留 FULLTEXT 以备将来切换到 ngram 全文检索（数据量更大时）；切换需改用 MATCH...AGAINST。
+  @@fulltext([searchText])
+}
+
+model RepairItem {
+  id        String   @id @default(cuid())
+  repairId  String
+  name      String   @db.Text
+  qty       Decimal  @default(1) @db.Decimal(12, 3)
+  price     Decimal  @default(0) @db.Decimal(12, 2)
+  cost      Decimal  @default(0) @db.Decimal(12, 2)
+  repair    Repair   @relation(fields: [repairId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([repairId])
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  repairId  String
+  amount    Decimal  @default(0) @db.Decimal(12, 2)
+  method    String   @default("cash")
+  note      String   @default("")
+  paidAt    DateTime @default(now())
+  createdBy String   @default("")
+  repair    Repair   @relation(fields: [repairId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([repairId])
+  @@index([paidAt])
+  @@index([method])
+}
+
+model Setting {
+  id        String   @id @default("main")
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model BackupSnapshot {
+  id        String   @id @default(cuid())
+  kind      String   @default("manual")
+  reason    String   @default("")
+  data      Json
+  counts    Json
+  createdBy String   @default("")
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([kind])
+}

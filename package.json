@@ -1,0 +1,55 @@
+{
+  "name": "repairnote",
+  "version": "1.0.0",
+  "description": "Repair shop management system built with Next.js, Prisma, and MySQL/MariaDB.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/srmming/repairnote-open-source.git"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "next dev -H 0.0.0.0",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next build",
+    "smoke": "node scripts/smoke-ui.mjs",
+    "smoke:mobile": "node scripts/smoke-mobile.mjs",
+    "smoke:mobile:boss": "node scripts/smoke-mobile-boss.mjs",
+    "audit:real-user": "node scripts/audit-real-user.mjs",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:seed": "prisma db seed",
+    "db:studio": "prisma studio",
+    "mysql:setup": "node scripts/mysql-setup.mjs",
+    "plesk:setup": "node scripts/plesk-setup.mjs",
+    "plesk:pack": "node scripts/package-plesk.mjs",
+    "plesk:start": "node server.js"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@zxing/browser": "^0.2.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.555.0",
+    "next": "^16.2.6",
+    "prisma": "^6.19.3",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "tailwind-merge": "^3.4.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.59.1",
+    "typescript": "^5.9.3"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
+  "overrides": {
+    "postcss": "^8.5.10"
+  }
+}

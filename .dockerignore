@@ -1,0 +1,17 @@
+node_modules
+.next
+.git
+.env
+.env.*
+.DS_Store
+npm-debug.log*
+Docker安装说明.md
+*.png
+*.zip
+screenshots
+.playwright-mcp
+docs
+project-log.md
+AGENTS.md
+legacy
+outputs

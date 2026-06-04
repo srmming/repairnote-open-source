@@ -1,0 +1,38 @@
+name: repairnote
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql://${MYSQL_USER:-repairnote}:${MYSQL_PASSWORD:-repairnote-mysql-123}@mysql:3306/${MYSQL_DATABASE:-repairnote}
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      REPAIRNOTE_COOKIE_SECURE: ${REPAIRNOTE_COOKIE_SECURE:-false}
+      REPAIRNOTE_ADMIN_USERNAME: ${REPAIRNOTE_ADMIN_USERNAME:-admin}
+      REPAIRNOTE_ADMIN_PASSWORD: ${REPAIRNOTE_ADMIN_PASSWORD:-admin123}
+    ports:
+      - "${REPAIRNOTE_PORT:-3000}:3000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-repairnote}
+      MYSQL_USER: ${MYSQL_USER:-repairnote}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-repairnote-mysql-123}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-repairnote-root-123}
+    volumes:
+      - repairnote-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  repairnote-mysql-data:
+    name: ${REPAIRNOTE_VOLUME:-repairnote-mysql-data}
