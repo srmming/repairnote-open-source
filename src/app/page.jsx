@@ -684,7 +684,7 @@ const uiText = {
     publicBaseUrl: "客户进度页地址",
     publicBaseUrlPlaceholder: "https://example.com 或 http://192.168.1.64:3000",
     whatsappTemplate: "WhatsApp 进度话术",
-    whatsappTemplatePlaceholder: "支持 {name} 客户、{shop} 门店、{url} 进度链接、{ticket} 单号、{device} 设备",
+    whatsappTemplatePlaceholder: "支持 {name} 客户、{shop} 门店、{url} 进度链接、{ticket} 单号、{device} 设备、{status} 状态",
     contactPhone: "联系电话",
     taxRate: "税率",
     hideIssuer: "不打印出票人",
@@ -1189,7 +1189,7 @@ const uiText = {
     publicBaseUrl: "URL pública de seguimiento",
     publicBaseUrlPlaceholder: "https://example.com o http://192.168.1.64:3000",
     whatsappTemplate: "Mensaje WhatsApp seguimiento",
-    whatsappTemplatePlaceholder: "Usa {name}, {shop}, {url}, {ticket}, {device}",
+    whatsappTemplatePlaceholder: "Usa {name}, {shop}, {url}, {ticket}, {device}, {status}",
     contactPhone: "Teléfono de contacto",
     taxRate: "IVA",
     hideIssuer: "No imprimir emisor",
@@ -7716,14 +7716,17 @@ function normalizeWhatsappPhone(phone) {
 
 function buildWhatsappProgressMessage(settings, repair, client, publicUrl) {
   const template = String(whatsappTemplateValue(settings));
+  const lang = getLang(settings);
   const device = [repair?.brand, repair?.model].filter(Boolean).join(" / ");
   const shop = String(settings?.shopName || "").trim() || APP_DISPLAY_NAME;
+  const status = statusLabel(repair?.status || "", lang);
   return template
     .replaceAll("{url}", publicUrl || "")
     .replaceAll("{ticket}", repair?.ticket || "")
     .replaceAll("{name}", client?.name || repair?.clientName || "")
     .replaceAll("{device}", device)
-    .replaceAll("{shop}", shop);
+    .replaceAll("{shop}", shop)
+    .replaceAll("{status}", status);
 }
 
 function buildReceiptWhatsappMessage(settings, repair, client, { total = 0, paidTotal = 0, due = 0, publicUrl = "" } = {}) {
@@ -8112,13 +8115,16 @@ function buildPrintHtml(mode, repair, client, { subtotal, total, due, qrDataUrl,
   const showFinalPaymentLine = !printsWarrantyDocument && normalizeStatus(repair.status) !== "已取走";
   const repairDescription = repairContentLabel(repair, lang) || repair.issue || "";
   const repairProblem = repairPrintProblemLabel(repair, lang) || "-";
+  const repairNote = localizeText(repair.issue || "", lang).trim();
+  const repairProblemLine = repairProblem && repairProblem !== repairNote ? `<div>${t("printProblem")}: ${escapeHtml(repairProblem)}</div>` : "";
+  const repairNoteLine = repairNote ? `<div class="print-note">${t("repairNote")}: ${escapeHtml(repairNote)}</div>` : "";
   const imeiPrintLine = repair.imei ? `<div>${escapeHtml(repair.imei || "")}</div>` : "";
   const clientInfo = narrow
     ? `<div>${t("name")}: ${escapeHtml(client.name || repair.clientName || "")}</div><div>${t("phone")}: ${escapeHtml(client.phone || repair.phone || "")}</div>`
     : `<div>${t("name")}: ${escapeHtml(client.name || repair.clientName || "")}</div><div>${t("phone")}: ${escapeHtml(client.phone || repair.phone || "")}</div><div>${t("address")}: ${escapeHtml(client.address || repair.address || "")}</div><div>${t("identity")}: ${escapeHtml(client.identity || repair.identity || "")}</div>`;
   const repairInfo = narrow
-    ? `<div>${t("date")}: ${escapeHtml(repair.repairTime || "")}</div><div>${t("status")}: ${escapeHtml(statusLabel(repair.status || "", lang))}</div><div>${t("device")}: ${escapeHtml(repair.brand || "")} ${escapeHtml(repair.model || "")}</div>${imeiPrintLine}<div>${t("printProblem")}: ${escapeHtml(repairProblem)}</div>`
-    : `<div>${t("date")}: ${escapeHtml(repair.repairTime || "")}</div><div>${t("status")}: ${escapeHtml(statusLabel(repair.status || "", lang))}</div><div>${t("device")}: ${escapeHtml(repair.brand || "")} ${escapeHtml(repair.model || "")}</div>${imeiPrintLine}<div>${t("passwordPrint")}: ${escapeHtml(repair.passwordType === "Contraseña" ? repair.passwordText : repair.passwordType || "")}</div>${technicianLine}${printWarrantyInfo}`;
+    ? `<div>${t("date")}: ${escapeHtml(repair.repairTime || "")}</div><div>${t("status")}: ${escapeHtml(statusLabel(repair.status || "", lang))}</div><div>${t("device")}: ${escapeHtml(repair.brand || "")} ${escapeHtml(repair.model || "")}</div>${imeiPrintLine}${repairProblemLine || (!repairNoteLine ? `<div>${t("printProblem")}: ${escapeHtml(repairProblem)}</div>` : "")}${repairNoteLine}`
+    : `<div>${t("date")}: ${escapeHtml(repair.repairTime || "")}</div><div>${t("status")}: ${escapeHtml(statusLabel(repair.status || "", lang))}</div><div>${t("device")}: ${escapeHtml(repair.brand || "")} ${escapeHtml(repair.model || "")}</div>${imeiPrintLine}<div>${t("passwordPrint")}: ${escapeHtml(repair.passwordType === "Contraseña" ? repair.passwordText : repair.passwordType || "")}</div>${technicianLine}${printWarrantyInfo}${repairNoteLine}`;
   const repairLine = narrow ? "" : `<div class="repair-line"><span>${escapeHtml(repairDescription)}</span><b>${money(total)}</b></div>`;
   const sheetContent = `
   <div class="print-meta"><span>${escapeHtml(formatDateTime(new Date()))}</span><span>${escapeHtml(docTitle)}</span></div>
@@ -8159,6 +8165,7 @@ function buildPrintHtml(mode, repair, client, { subtotal, total, due, qrDataUrl,
     .codes{display:grid;grid-template-columns:${narrow ? "1fr auto" : "1fr auto"};gap:${narrow ? "6px" : "16px"};align-items:end;text-align:center}.barcode svg{width:100%;max-width:${narrow ? "190px" : "300px"};height:${narrow ? "30px" : "46px"}}.ticket-no{font-size:${narrow ? "11px" : "16px"};font-weight:700;letter-spacing:0.6px;margin-top:${narrow ? "1px" : "4px"}}.qr{width:${narrow ? "46px" : "112px"};height:${narrow ? "46px" : "112px"};display:block;background:#fff}.qr-box{display:flex;flex-direction:column;align-items:center;gap:${narrow ? "1px" : "4px"}}.qr-caption{color:#6e6e73;font-size:${narrow ? "8.5px" : "10.5px"};max-width:${narrow ? "52px" : "120px"}}
     .section{padding:${narrow ? "4px 0" : "11px 0"};margin-top:0;border-bottom:1px solid #e5e5ea}.section h2{color:#6e6e73;font-size:${narrow ? "9.5px" : "12.5px"};letter-spacing:0;text-transform:uppercase;margin:0 0 ${narrow ? "3px" : "8px"};font-weight:700}
     .info-grid{display:grid;grid-template-columns:${narrow ? "1fr" : "1fr 1fr"};gap:${narrow ? "1px" : "5px"} 18px}.client-info-grid{grid-template-columns:1fr 1fr}.info-grid div{min-height:${narrow ? "12px" : "18px"};color:#1d1d1f;min-width:0;overflow-wrap:anywhere}
+    .print-note{grid-column:1/-1;white-space:pre-wrap}
     .repair-line{display:flex;justify-content:space-between;gap:${narrow ? "8px" : "16px"};margin-top:${narrow ? "4px" : "9px"};padding-top:${narrow ? "4px" : "9px"};border-top:1px solid #e5e5ea;font-weight:700}.repair-line b{white-space:nowrap}
     table{width:100%;border-collapse:collapse;margin:${narrow ? "4px" : "8px"} 0 0;font-size:${narrow ? "9.8px" : "12.8px"}}th,td{text-align:left;padding:${narrow ? "2.8px 0" : "7px 0"};border-bottom:1px solid #e5e5ea}th{color:#6e6e73;font-weight:700}tr:last-child td{border-bottom:0}.num{text-align:right;white-space:nowrap}
     .tax-grid{display:grid;grid-template-columns:${narrow ? "1.18fr .82fr 1fr 1fr" : "1fr 1fr 1fr 1fr"};gap:${narrow ? "3px" : "8px"};margin-top:${narrow ? "4px" : "8px"};padding:${narrow ? "5px 0" : "12px 0"};border-top:1px solid #d2d2d7;border-bottom:1px solid #d2d2d7}.tax-grid span{display:block;color:#6e6e73;font-size:${narrow ? "8.6px" : "12.3px"};font-weight:800;line-height:1.05}.tax-grid b{display:block;margin-top:${narrow ? "2px" : "5px"};font-size:${narrow ? "11.5px" : "16.5px"};white-space:nowrap}.final-total{display:grid;grid-template-columns:1fr 1fr;gap:${narrow ? "4px" : "10px"};margin-top:0;padding:${narrow ? "3px 0" : "8px 0"};border-bottom:1px solid #d2d2d7;font-weight:800}.final-total em{display:block;color:#1d1d1f;font-size:${narrow ? "9px" : "11.5px"};font-style:normal;line-height:1.05}.final-total b{display:block;margin-top:1px;font-size:${narrow ? "10.5px" : "14px"};white-space:nowrap;line-height:1.05}.final-total span:last-child{justify-self:end;text-align:right}
