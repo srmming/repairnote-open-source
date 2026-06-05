@@ -238,7 +238,7 @@ await step("新增维修单、价格项目、A4 和小票打印、保存", async
   await chooseUiSelect(page.getByRole("main"), "维修师", technicianName);
   await page.getByText("更换电池，三个月保修").click();
   await page.getByPlaceholder("维修备注").fill(`Cambiar bateria test ${suffix}`);
-  await page.getByRole("button", { name: "创建" }).click();
+  await page.getByRole("button", { name: "保存" }).click();
   let repair = null;
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const client = await prisma.client.findFirst({ where: { phone: `688${suffix}` } });
@@ -291,7 +291,7 @@ await step("从已结束维修单创建保修单并编辑", async () => {
   await page.getByPlaceholder("成本").last().fill("8");
   await page.getByRole("main").getByRole("button").filter({ hasText: /^$/ }).last().click();
   await page.getByRole("cell", { name: "7.00 €", exact: true }).waitFor();
-  await page.getByRole("button", { name: "创建" }).click();
+  await page.getByRole("button", { name: "保存" }).click();
   await page.getByRole("heading", { name: "保修单" }).waitFor();
   await go("/dashboard/warranties", "保修单");
   await page.locator("tr", { hasText: `保修收费项目${suffix}` }).filter({ hasText: "15.00 €" }).waitFor();

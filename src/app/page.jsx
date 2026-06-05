@@ -432,7 +432,7 @@ const uiText = {
     paymentReceivedHelper: "已付清，订单已取走",
     fullPaidNoWarrantyButton: "已全款付款未保修",
     fullPaidNoWarrantyHelper: "点击后标记已取走并打印 1 张维修小票",
-    finalPaymentButton: "尾款收款",
+    finalPaymentButton: "已付款",
     recordDepositPayment: "订金收款",
     depositPaidHelper: "收完自动打印维修小票，不改订单状态",
     paidCloseHelper: "收完自动打印维修小票并已取走",
@@ -3622,25 +3622,27 @@ function ReportsPage({ data, filters, setFilters, navigate, lang, t }) {
           onClear={clearDateRange}
         />
       </Toolbar>
-      <Card className="report-wide-card">
-        <CardHeader><CardTitle>{t("technicianPerformance")}</CardTitle></CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader><TableRow><TableHead>{t("assignedTechnician")}</TableHead><TableHead>{t("orderCount")}</TableHead><TableHead>{t("repairAmount")}</TableHead><TableHead>{t("costAmount")}</TableHead><TableHead>{t("profitAmount")}</TableHead><TableHead>{t("receivedAmount")}</TableHead><TableHead>{t("unpaidAmount")}</TableHead></TableRow></TableHeader>
-            <TableBody>{technicianRows.length ? technicianRows.map((row) => (
-              <TableRow key={row.id} className={`row-click ${row.id === "unassigned" ? "technician-row-unassigned" : ""}`} onClick={() => openTechnicianOrders(row)}>
-                <TableCell>{row.name}</TableCell>
-                <TableCell>{row.count}</TableCell>
-                <TableCell>{money(row.amount)}</TableCell>
-                <TableCell>{money(row.cost)}</TableCell>
-                <TableCell>{money(row.profit)}</TableCell>
-                <TableCell>{money(row.received)}</TableCell>
-                <TableCell>{money(row.unpaid)}</TableCell>
-              </TableRow>
-            )) : <TableRow><TableCell colSpan={7}><Empty>{t("noData")}</Empty></TableCell></TableRow>}</TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      {technicianRows.length ? (
+        <Card className="report-wide-card">
+          <CardHeader><CardTitle>{t("technicianPerformance")}</CardTitle></CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader><TableRow><TableHead>{t("assignedTechnician")}</TableHead><TableHead>{t("orderCount")}</TableHead><TableHead>{t("repairAmount")}</TableHead><TableHead>{t("costAmount")}</TableHead><TableHead>{t("profitAmount")}</TableHead><TableHead>{t("receivedAmount")}</TableHead><TableHead>{t("unpaidAmount")}</TableHead></TableRow></TableHeader>
+              <TableBody>{technicianRows.map((row) => (
+                <TableRow key={row.id} className={`row-click ${row.id === "unassigned" ? "technician-row-unassigned" : ""}`} onClick={() => openTechnicianOrders(row)}>
+                  <TableCell>{row.name}</TableCell>
+                  <TableCell>{row.count}</TableCell>
+                  <TableCell>{money(row.amount)}</TableCell>
+                  <TableCell>{money(row.cost)}</TableCell>
+                  <TableCell>{money(row.profit)}</TableCell>
+                  <TableCell>{money(row.received)}</TableCell>
+                  <TableCell>{money(row.unpaid)}</TableCell>
+                </TableRow>
+              ))}</TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      ) : null}
       <div className="metric-grid">
         <Metric title={t("monthRevenue")} value={money(revenue)} />
         <Metric title={t("repairCount")} value={repairs.length} />
@@ -3649,27 +3651,31 @@ function ReportsPage({ data, filters, setFilters, navigate, lang, t }) {
         <Metric title={t("profitAmount")} value={money(profit)} />
         <Metric title={t("unpaidAmount")} value={money(unpaid)} />
       </div>
-      <Card className="report-wide-card">
-        <CardHeader>
-          <CardTitle>{t("revenueTrend")}</CardTitle>
-          <div className="report-trend-controls">
-            <Select value={trendGranularity} onChange={(event) => setFilters({ ...filters, reportTrendGranularity: event.target.value })}>
-              <option value="day">{t("trendDaily")}</option>
-              <option value="week">{t("trendWeekly")}</option>
-              <option value="month">{t("trendMonthly")}</option>
-            </Select>
-            <Select value={trendMetric} onChange={(event) => setFilters({ ...filters, reportTrendMetric: event.target.value })}>
-              <option value="both">{t("trendMetricBoth")}</option>
-              <option value="amount">{t("trendMetricAmount")}</option>
-              <option value="orders">{t("trendMetricOrders")}</option>
-            </Select>
-          </div>
-        </CardHeader>
-        <CardContent><RevenueTrendChart rows={trendRows} metric={trendMetric} t={t} /></CardContent>
-      </Card>
-      <div className="report-grid">
-        <ReportTable title={t("topModels")} rows={topModels} t={t} variant="rank-grid" />
-      </div>
+      {trendRows.length ? (
+        <Card className="report-wide-card">
+          <CardHeader>
+            <CardTitle>{t("revenueTrend")}</CardTitle>
+            <div className="report-trend-controls">
+              <Select value={trendGranularity} onChange={(event) => setFilters({ ...filters, reportTrendGranularity: event.target.value })}>
+                <option value="day">{t("trendDaily")}</option>
+                <option value="week">{t("trendWeekly")}</option>
+                <option value="month">{t("trendMonthly")}</option>
+              </Select>
+              <Select value={trendMetric} onChange={(event) => setFilters({ ...filters, reportTrendMetric: event.target.value })}>
+                <option value="both">{t("trendMetricBoth")}</option>
+                <option value="amount">{t("trendMetricAmount")}</option>
+                <option value="orders">{t("trendMetricOrders")}</option>
+              </Select>
+            </div>
+          </CardHeader>
+          <CardContent><RevenueTrendChart rows={trendRows} metric={trendMetric} t={t} /></CardContent>
+        </Card>
+      ) : null}
+      {topModels.length ? (
+        <div className="report-grid">
+          <ReportTable title={t("topModels")} rows={topModels} t={t} variant="rank-grid" />
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -4409,13 +4415,12 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const [paymentConfirm, setPaymentConfirm] = useState("");
   const [paymentReceived, setPaymentReceived] = useState("");
   const [finalPaymentReceived, setFinalPaymentReceived] = useState("");
-  const [depositPaymentReceived, setDepositPaymentReceived] = useState("");
   const [depositTargetAmount, setDepositTargetAmount] = useState("");
   const [pendingPaidRepair, setPendingPaidRepair] = useState(null);
   const [costDialogOpen, setCostDialogOpen] = useState(false);
   const [clientDropdownOpen, setClientDropdownOpen] = useState("");
   const fallbackDraft = useMemo(() => {
-    const base = existing ? normalizeRepairDraft(structuredClone(existing)) : newRepairDraft();
+    const base = existing ? normalizeRepairDraftFromRecord(structuredClone(existing)) : newRepairDraft();
     if (!existing && isWarrantyRoute) return { ...base, orderType: "warranty" };
     if (existing && isWarrantyRoute && (base.orderType || "repair") !== "warranty") return { ...base, orderType: "warranty" };
     return base;
@@ -4455,7 +4460,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
     apiGet(`/api/repairs/${repairId}`)
       .then((payload) => {
         if (cancelled || !payload?.repair) return;
-        const fullDraft = normalizeRepairDraft(payload.repair);
+        const fullDraft = normalizeRepairDraftFromRecord(payload.repair);
         initialSnapshotRef.current = comparableRepairDraft(fullDraft);
         draftRef.current = fullDraft;
         setRepairDraft(fullDraft);
@@ -4496,9 +4501,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const hasBillableTotal = total >= 0.01;
   const paymentRowsForDraft = repairPaymentsForDisplay(draft, t);
   const isFirstPayment = paymentRowsForDraft.length === 0;
-  const depositCollected = paymentTotal(
-    (Array.isArray(draft.payments) ? draft.payments.map(normalizePaymentDraft) : []).filter(isDepositPayment)
-  );
+  const depositCollected = repairDepositAmount(draft);
   const depositPaymentAmount = roundMoney(draft.deposit);
   const remainingDeposit = roundMoney(depositPaymentAmount - depositCollected);
   const dueAfterDeposit = Math.max(0, total - depositPaymentAmount);
@@ -4543,9 +4546,6 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const finalPaymentReceivedAmount = roundMoney(finalPaymentReceived);
   const finalPaymentChange = Math.max(0, roundMoney(finalPaymentReceivedAmount - due));
   const finalPaymentReceivedInsufficient = paymentConfirm === "final" && finalPaymentReceivedAmount + 0.005 < due;
-  const depositPaymentReceivedAmount = roundMoney(depositPaymentReceived);
-  const depositPaymentChange = Math.max(0, roundMoney(depositPaymentReceivedAmount - remainingDeposit));
-  const depositPaymentReceivedInsufficient = paymentConfirm === "deposit" && depositPaymentReceivedAmount + 0.005 < remainingDeposit;
   const costTotal = repairCostAmount(draft);
   const profit = total - costTotal;
   const discountPercentValue = subtotal > 0 ? roundMoney((parseMoneyInput(draft.discountAmount) / subtotal) * 100) : 0;
@@ -4769,31 +4769,21 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
     setPaymentConfirm("");
     setPaymentReceived("");
     setFinalPaymentReceived("");
-    setDepositPaymentReceived("");
     setDepositTargetAmount("");
     setPendingPaidRepair(null);
   };
 
-  const recordDepositPayment = () => {
+  const recordDepositPayment = async () => {
     const depositAmount = roundMoney(draft.deposit);
     if (repairRequiredFieldsMissing(draft, data.clients)) return toast(t("requiredRepairFields"));
     if (total < 0.01) return toast(t("paymentNoPendingAmount"));
     if (depositAmount < 0.01) return toast(t("depositPaymentRequired"));
     if (depositAmount - total > 0.005) return toast(t("depositPaymentExceedsTotal"));
     if (remainingDeposit < 0.01) return toast(t("paymentNoPendingAmount"));
-    setDepositPaymentReceived(String(roundMoney(remainingDeposit).toFixed(2)));
-    setPaymentConfirm("deposit");
-  };
-
-  const executeDepositPayment = async () => {
-    if (depositPaymentReceivedAmount + 0.005 < remainingDeposit) return toast(t("finalPaymentInsufficient"));
-    setPaymentConfirm("");
-    setDepositPaymentReceived("");
     const printWindow = openPrintWindow();
     const selectedMethod = ["cash", "card"].includes(draft.paymentMethod) ? draft.paymentMethod : "cash";
-    const payments = paymentsForDraftWithAdjustments(draft, t, selectedMethod);
-    const nextPaidTotal = paymentTotal(payments);
-    const depositDraft = { ...draft, payments, deposit: nextPaidTotal };
+    const payments = paymentsForDraftWithAdjustments({ ...draft, deposit: depositAmount }, t, selectedMethod);
+    const depositDraft = { ...draft, paymentMethod: selectedMethod, payments, deposit: depositAmount };
     setRepairDraft(depositDraft);
     const result = await saveRepair(depositDraft, { stayOnPage: true, deferNavigation: true });
     if (!result) {
@@ -4839,8 +4829,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
     const nextPayments = finalDue >= 0.01
       ? [...existingPayments, { id: id(), amount: finalDue, method: selectedMethod, note: t("finalPayment"), paidAt: formatDateTime(new Date()), createdBy: "" }]
       : existingPayments;
-    const nextPaidTotal = paymentTotal(nextPayments);
-    const paidDraft = buildUpdatedDraft({ ...draft, payments: nextPayments, deposit: nextPaidTotal }, "status", "已取走");
+    const paidDraft = buildUpdatedDraft({ ...draft, payments: nextPayments, deposit: repairDepositAmount({ ...draft, payments: nextPayments }) }, "status", "已取走");
     setRepairDraft(paidDraft);
     const result = await saveRepair(paidDraft, { stayOnPage: true, deferNavigation: paidDraft.id === "new" });
     if (!result) {
@@ -4896,7 +4885,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
       paidAt: formatDateTime(new Date()),
       createdBy: ""
     }];
-    const paymentDraft = { ...draft, paymentMethod: selectedMethod, payments: nextPayments, deposit: paymentTotal(nextPayments) };
+    const paymentDraft = { ...draft, paymentMethod: selectedMethod, payments: nextPayments, deposit: repairDepositAmount({ ...draft, payments: nextPayments }) };
     setRepairDraft(paymentDraft);
     const result = await saveRepair(paymentDraft, { stayOnPage: true, deferNavigation: true });
     if (!result) return;
@@ -4922,7 +4911,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
       paidAt: formatDateTime(new Date()),
       createdBy: ""
     }];
-    const paymentDraft = { ...draft, paymentMethod: selectedMethod, payments: nextPayments, deposit: paymentTotal(nextPayments) };
+    const paymentDraft = { ...draft, paymentMethod: selectedMethod, payments: nextPayments, deposit: repairDepositAmount({ ...draft, payments: nextPayments }) };
     setRepairDraft(paymentDraft);
     const result = await saveRepair(paymentDraft, { stayOnPage: true, deferNavigation: true });
     if (!result) return;
@@ -4999,8 +4988,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
     const willComplete = repairPaidAmount(baseDraft) + amount + 0.005 >= chargeAmount(baseDraft);
     const note = firstPayment ? t("depositPayment") : willComplete ? t("finalPayment") : t("paymentEntry");
     const nextPayments = [...existingPayments, { id: id(), amount, method, note, paidAt: formatDateTime(new Date()), createdBy: "" }];
-    const nextPaidTotal = paymentTotal(nextPayments);
-    return { ...baseDraft, paymentMethod: method, payments: nextPayments, deposit: nextPaidTotal };
+    return { ...baseDraft, paymentMethod: method, payments: nextPayments, deposit: repairDepositAmount({ ...baseDraft, payments: nextPayments }) };
   };
 
   const executePayment = async () => {
@@ -5369,7 +5357,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
               </label>
               <div className="totals-divider" />
               <div className="totals-line totals-main"><span>{t("total")}</span><b>{money(total)}</b></div>
-              <div className="totals-line totals-deposit"><span>{t("deposit").replace(" €", "")}</span><b>- {money(paidTotal)}</b></div>
+              <div className="totals-line totals-deposit"><span>{t("paidAmount")}</span><b>- {money(paidTotal)}</b></div>
               <div className="totals-line totals-due"><span>{t("due")}</span><b>{money(due)}</b></div>
               <button type="button" className={`paid-close-button ${canStartPaidWarranty ? "paid-warranty-button" : ""}`} disabled={!canRecordFinalPayment && !canStartPaidWarranty} title={canStartPaidWarranty ? t("paidWarrantyHelper") : finalPaymentDisabledReason} onClick={canStartPaidWarranty ? startPaidWarranty : recordPaymentAndClose}>
                 <span>{canStartPaidWarranty ? t("paidWarrantyButton") : t("finalPaymentButton")}</span>
@@ -5395,9 +5383,6 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
                   <Download size={16} strokeWidth={1.75} />
                   <span>{t("receiptImage")}</span>
                 </ActionSurface>
-              </div>
-              <div className="price-save-actions">
-                <Button className="repair-save-action-button" onClick={() => saveRepair()} disabled={saveDisabledByLock} title={saveDisabledByLock ? t("orderLockedHint") : ""}>{existing ? t("save") : t("create")}</Button>
               </div>
             </section>
           </div>
@@ -5448,29 +5433,6 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
       </div>
       </fieldset>
       {signatureOpen && !orderLocked && showSignatureSection ? <SignatureDialog draft={draft} setRepairDraft={setRepairDraft} close={() => setSignatureOpen(false)} t={t} /> : null}
-      <Dialog open={paymentConfirm === "deposit"} onOpenChange={(open) => { if (!open) cancelPaymentConfirm(); }} title={t("confirmTitle")} contentClassName="confirm-dialog-content">
-        <DialogBody className="confirm-dialog final-payment-dialog">
-          <p className="confirm-dialog-message">{t("depositPaidConfirm")}</p>
-          <FormControlLabel className="final-payment-received-field">
-            <span>{t("finalPaymentReceiveAmount")}</span>
-            <Input
-              type="number"
-              value={depositPaymentReceived}
-              onChange={(event) => setDepositPaymentReceived(event.target.value)}
-            />
-          </FormControlLabel>
-          <div className="final-payment-summary">
-            <div><span>{t("finalPaymentDueAmount")}</span><b>{money(remainingDeposit)}</b></div>
-            <div><span>{t("finalPaymentReceiveAmount").replace(" €", "")}</span><b>{money(depositPaymentReceivedAmount)}</b></div>
-            <div className={depositPaymentChange > 0 ? "positive" : ""}><span>{t("finalPaymentChangeAmount")}</span><b>{money(depositPaymentChange)}</b></div>
-          </div>
-          {depositPaymentReceivedInsufficient ? <div className="final-payment-error">{t("finalPaymentInsufficient")}</div> : null}
-          <DialogFooter>
-            <Button variant="outline" type="button" onClick={cancelPaymentConfirm}>{t("cancel")}</Button>
-            <Button type="button" disabled={depositPaymentReceivedInsufficient} onClick={executeDepositPayment}>{t("confirmAction")}</Button>
-          </DialogFooter>
-        </DialogBody>
-      </Dialog>
       <Dialog open={paymentConfirm === "final"} onOpenChange={(open) => { if (!open) cancelPaymentConfirm(); }} title={t("confirmTitle")} contentClassName="confirm-dialog-content">
         <DialogBody className="confirm-dialog final-payment-dialog">
           <p className="confirm-dialog-message">{t("paidConfirm")}</p>
@@ -5730,7 +5692,7 @@ function RepairItemsTable({ draft, setRepairDraft, t, lang = "zh", className = "
             <TableCell><Button className="item-remove-button" size="sm" variant="ghost" onClick={() => removeItem(index)}><X {...ICON_SM} /></Button></TableCell>
           </TableRow>
         );
-      }) : <TableRow><TableCell colSpan={7}><Empty>{t("noData")}</Empty></TableCell></TableRow>}</TableBody>
+      }) : <TableRow className="repair-items-empty-row"><TableCell colSpan={7}><Empty compact>{t("noData")}</Empty></TableCell></TableRow>}</TableBody>
     </Table>
   );
 }
@@ -6985,6 +6947,12 @@ function normalizeRepairDraft(repair) {
   };
 }
 
+function normalizeRepairDraftFromRecord(repair) {
+  const draft = normalizeRepairDraft(repair || {});
+  if (!Array.isArray(draft.payments) || !draft.payments.length) return draft;
+  return { ...draft, deposit: repairDepositAmount(draft) };
+}
+
 function comparableRepairDraft(draft) {
   const clean = normalizeRepairDraft(draft || {});
   delete clean.catalogSearch;
@@ -7158,6 +7126,12 @@ function repairPaidAmount(repair) {
   return parseMoneyInput(repair.deposit);
 }
 
+function repairDepositAmount(repair) {
+  const payments = Array.isArray(repair.payments) ? repair.payments.map(normalizePaymentDraft) : [];
+  if (!payments.length) return parseMoneyInput(repair.deposit);
+  return Math.max(0, roundMoney(paymentTotal(payments.filter((payment) => isDepositPayment(payment) || isDepositAdjustment(payment)))));
+}
+
 function formatPaymentDate(value, lang = "zh") {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
@@ -7172,16 +7146,16 @@ function dateInRange(value, start, end) {
 
 function paymentsForDraftWithAdjustments(draft, t = makeT("zh"), depositMethod = "ledger") {
   const payments = Array.isArray(draft.payments) ? draft.payments.map(normalizePaymentDraft).filter((payment) => Math.abs(payment.amount) >= 0.005) : [];
-  const desiredPaid = parseMoneyInput(draft.deposit);
+  const desiredDeposit = parseMoneyInput(draft.deposit);
   const depositPayments = payments.filter(isDepositPayment);
-  const preservedPayments = payments.filter((payment) => !isDepositPayment(payment) && !isManualPaymentAdjustment(payment));
-  const desiredDeposit = Math.max(0, roundMoney(desiredPaid - paymentTotal(preservedPayments)));
-  if (desiredDeposit < 0.01) return preservedPayments;
+  const preservedPayments = payments.filter((payment) => !isDepositPayment(payment) && !isDepositAdjustment(payment) && !isManualPaymentAdjustment(payment));
+  const normalizedDeposit = Math.max(0, roundMoney(desiredDeposit));
+  if (normalizedDeposit < 0.01) return preservedPayments;
   const baseDeposit = depositPayments[0] || {};
   return [
     {
       id: baseDeposit.id || id(),
-      amount: desiredDeposit,
+      amount: normalizedDeposit,
       method: baseDeposit.method || depositMethod || "ledger",
       note: t("depositPayment"),
       paidAt: baseDeposit.paidAt || formatDateTime(new Date()),

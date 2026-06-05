@@ -345,7 +345,7 @@ export async function saveRepairRecord({ repair, client, actor } = {}) {
       sourceTicket = source?.ticket || "";
     }
     const searchText = buildRepairSearchText(repairData, { client: searchClient || {}, items: repairItems, sourceTicket });
-    const dbData = { ...repairPrismaData(repairData), deposit: dbMoney(paymentTotal(paymentCreates), dbMoney(repairData.deposit)), searchText, ticketSort: BigInt(ticketSortValue(repairTicket(repairData))) };
+    const dbData = { ...repairPrismaData(repairData), deposit: paymentCreates.length ? depositPaymentTotal(paymentCreates) : dbMoney(repairData.deposit), searchText, ticketSort: BigInt(ticketSortValue(repairTicket(repairData))) };
     const itemCreates = repairItems.map(repairItemPrismaData);
     const savedRepair = existing
       ? await tx.repair.update({ where: { id: repair.id }, data: { ...dbData, items: { deleteMany: {}, create: itemCreates }, payments: { deleteMany: {}, create: paymentCreates.map(paymentPrismaData) } }, include: { items: true, payments: { orderBy: { paidAt: "desc" } } } })
@@ -454,7 +454,12 @@ function paymentNote(payment = {}) {
 
 function isDepositPayment(payment = {}) {
   const note = paymentNote(payment);
-  return note.includes("订金") || note.includes("历史订金") || note.includes("depósito") || note.includes("deposito");
+  return !isDepositAdjustment(payment) && (note.includes("订金") || note.includes("历史订金") || note.includes("depósito") || note.includes("deposito"));
+}
+
+function isDepositAdjustment(payment = {}) {
+  const note = paymentNote(payment);
+  return note.includes("订金调整") || note.includes("ajuste de depósito") || note.includes("ajuste de deposito") || note.includes("depósito ajustado") || note.includes("deposito ajustado");
 }
 
 function isManualPaymentAdjustment(payment = {}) {
@@ -504,6 +509,10 @@ function paymentPrismaData(payment) {
 
 function paymentTotal(payments = []) {
   return payments.reduce((sum, payment) => sum + dbMoney(payment.amount), 0);
+}
+
+function depositPaymentTotal(payments = []) {
+  return Math.max(0, paymentTotal(payments.filter(isDepositPayment)));
 }
 
 function roundMoney(value) {
@@ -704,7 +713,7 @@ export async function replaceBusinessData(data, options = {}) {
           technicianId: repairData.technicianId || "",
           technicianName: repairData.technicianName || "",
           budget: repairData.budget || 0,
-          deposit: repairPayments.length ? paymentTotal(repairPayments) : repairData.deposit || 0,
+          deposit: repairPayments.length ? depositPaymentTotal(repairPayments) : repairData.deposit || 0,
           paymentMethod: normalizeRepairPaymentMethod(repairData.paymentMethod),
           discountAmount: repairData.discountAmount || 0,
           costAmount: repairData.costAmount || 0,

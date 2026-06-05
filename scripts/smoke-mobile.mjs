@@ -115,7 +115,7 @@ await step("手机新增维修单并保存", async () => {
   await page.getByPlaceholder("数量").fill("1");
   await page.getByPlaceholder("单价").fill("66");
   await page.locator(".price-row button").click();
-  await page.locator(".price-save-actions .ui-button").last().click();
+  await page.getByRole("button", { name: "保存" }).click();
   await page.getByRole("heading", { name: "维修单" }).waitFor();
 
   for (let attempt = 0; attempt < 20; attempt += 1) {

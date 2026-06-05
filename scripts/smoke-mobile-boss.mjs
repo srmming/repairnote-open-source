@@ -66,14 +66,14 @@ async function ensureMobileOrder(page) {
   await page.getByPlaceholder("数量").fill("1");
   await page.getByPlaceholder("单价").fill("88");
   await page.locator(".price-row button").click();
-  await page.locator(".price-save-actions .ui-button").last().click();
+  await page.getByRole("button", { name: "保存" }).click();
   await page.getByRole("heading", { name: "维修单" }).waitFor();
   await page.locator('[data-smoke="mobile-order-card"]').first().waitFor();
   if (!await page.locator('[data-smoke="mobile-technician-rank-card"]').count()) {
     const card = page.locator('[data-smoke="mobile-order-card"]').first();
     await card.getByRole("button", { name: /操作/ }).click();
     await card.locator(".mobile-order-action-panel").waitFor();
-    await card.locator(".technician-inline-select .ui-select").click();
+    await card.locator(".repair-technician-inline .picker-trigger").click();
     const options = page.getByRole("listbox").locator(".ui-select-option:not(:disabled)");
     const count = await options.count();
     if (count < 2) throw new Error("没有可分配的维修师，无法验收维修师统计");
@@ -88,6 +88,25 @@ async function assertNoHorizontalOverflow(page, name) {
     return Math.ceil(root.scrollWidth) - Math.ceil(window.innerWidth);
   });
   if (overflow > 2) throw new Error(`${name} 横向溢出 ${overflow}px`);
+}
+
+async function openEditableOrderCard(page) {
+  const cards = page.locator('[data-smoke="mobile-order-card"]');
+  const count = await cards.count();
+  for (let index = 0; index < count; index += 1) {
+    const card = cards.nth(index);
+    if (!await card.isVisible()) continue;
+    const actionButton = card.getByRole("button", { name: /操作/ }).first();
+    if (!await actionButton.count() || !await actionButton.isVisible()) continue;
+    if (await card.locator(".mobile-order-action-panel").count()) {
+      await actionButton.click();
+    }
+    await actionButton.click();
+    await card.locator(".mobile-order-action-panel").waitFor();
+    if (await card.locator(".status-select").count() && await card.locator(".repair-technician-inline").count()) return card;
+    await actionButton.click();
+  }
+  throw new Error("没有找到可编辑的订单卡");
 }
 
 const browser = await chromium.launch({ channel: "chrome", headless: true });
@@ -108,16 +127,15 @@ await step("订单页速览、日期、状态和订单卡", async () => {
   await ensureMobileOrder(page);
   await page.locator('[data-smoke="mobile-boss-summary"]').waitFor();
   await page.locator(".date-range-filter").waitFor();
-  await page.locator(".filter-pill", { hasText: "维修中" }).first().waitFor();
+  await page.locator(".filter-pill", { hasText: "维修中" }).first().click();
   const card = page.locator('[data-smoke="mobile-order-card"]').first();
   await card.waitFor();
   await card.locator(".mobile-order-ticket").waitFor();
   await card.locator(".mobile-order-meta").waitFor();
   if (await card.locator(".mobile-order-action-panel").count()) throw new Error("订单卡默认展开了操作区");
-  await card.getByRole("button", { name: /操作/ }).click();
-  await card.locator(".mobile-order-action-panel").waitFor();
-  await card.locator(".status-select").waitFor();
-  await card.locator(".technician-inline-select").waitFor();
+  const editableCard = await openEditableOrderCard(page);
+  await editableCard.locator(".status-select").waitFor();
+  await editableCard.locator(".repair-technician-inline").waitFor();
   await assertNoHorizontalOverflow(page, "订单页");
 });
 
