@@ -512,7 +512,7 @@ function paymentTotal(payments = []) {
 }
 
 function depositPaymentTotal(payments = []) {
-  return Math.max(0, paymentTotal(payments.filter(isDepositPayment)));
+  return Math.max(0, roundMoney(paymentTotal(payments.filter((payment) => isDepositPayment(payment) || isDepositAdjustment(payment)))));
 }
 
 function roundMoney(value) {

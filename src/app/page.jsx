@@ -4538,6 +4538,9 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const canRecordFinalPayment = due >= 0.01 && repairFieldsComplete;
   const canStartPaidWarranty = due < 0.01 && repairFieldsComplete && !isPickedUpRepairStatus(draft.status);
   const depositPaymentDisabledReason = !repairFieldsComplete ? t("requiredRepairFields") : total < 0.01 ? t("paymentNoPendingAmount") : depositPaymentAmount < 0.01 ? t("depositPaymentRequired") : depositExceedsTotal ? t("depositPaymentExceedsTotal") : remainingDeposit < 0.01 ? t("paymentNoPendingAmount") : "";
+  const depositButtonUsesDialog = usePaidAdjustment;
+  const depositButtonDisabled = hasDeposit || depositButtonUsesDialog ? !canManageDeposit : !canRecordDepositPayment;
+  const depositButtonTitle = hasDeposit || depositButtonUsesDialog ? depositDisabledReason : depositPaymentDisabledReason;
   const finalPaymentDisabledReason = !repairFieldsComplete ? t("requiredRepairFields") : due < 0.01 ? t("paymentNoPendingAmount") : "";
   const finalPaymentReceivedAmount = roundMoney(finalPaymentReceived);
   const finalPaymentChange = Math.max(0, roundMoney(finalPaymentReceivedAmount - due));
@@ -4861,27 +4864,30 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
       setPaymentConfirm("payment");
       return;
     }
-    setDepositTargetAmount(String(roundMoney(depositCollected).toFixed(2)));
+    const targetDeposit = isMoneyInputValid(draft.deposit) ? Math.max(0, roundMoney(draft.deposit)) : depositCollected;
+    setDepositTargetAmount(String(targetDeposit.toFixed(2)));
     setPaymentConfirm("deposit-adjust");
   };
 
-  const executeDepositAdjustment = async () => {
-    if (!depositTargetValid) return toast(t("depositAdjustmentInvalid"));
-    if (Math.abs(depositAdjustmentDiff) < 0.005) return toast(t("depositAdjustmentNone"));
-    if (depositTargetValue < -0.005) return toast(t("depositAdjustmentInvalid"));
-    if (depositTargetValue - total > 0.005) return toast(t("depositPaymentExceedsTotal"));
-    const newPaidTotal = roundMoney(paidTotal + depositAdjustmentDiff);
+  const executeDepositAdjustmentTo = async (targetValue, targetValid = true) => {
+    const normalizedTargetValue = Math.max(0, roundMoney(targetValue));
+    const adjustmentDiff = roundMoney(normalizedTargetValue - depositCollected);
+    if (!targetValid) return toast(t("depositAdjustmentInvalid"));
+    if (Math.abs(adjustmentDiff) < 0.005) return toast(t("depositAdjustmentNone"));
+    if (normalizedTargetValue - total > 0.005) return toast(t("depositPaymentExceedsTotal"));
+    const newPaidTotal = roundMoney(paidTotal + adjustmentDiff);
     if (newPaidTotal < -0.005) return toast(t("depositAdjustmentNegativePaid"));
     if (newPaidTotal - total > 0.005) return toast(t("depositAdjustmentExceedsPaid"));
     setPaymentConfirm("");
     setDepositTargetAmount("");
     const selectedMethod = ["cash", "card"].includes(draft.paymentMethod) ? draft.paymentMethod : "cash";
-    const existingPayments = paymentsForDraftWithAdjustments(draft, t, selectedMethod);
+    const adjustmentBaseDraft = { ...draft, deposit: depositCollected };
+    const existingPayments = paymentsForDraftWithAdjustments(adjustmentBaseDraft, t, selectedMethod);
     const nextPayments = [...existingPayments, {
       id: id(),
-      amount: depositAdjustmentDiff,
+      amount: adjustmentDiff,
       method: selectedMethod,
-      note: `${t("depositAdjustmentTo")} ${money(depositTargetValue)}`,
+      note: `${t("depositAdjustmentTo")} ${money(normalizedTargetValue)}`,
       paidAt: formatDateTime(new Date()),
       createdBy: ""
     }];
@@ -4892,6 +4898,14 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
     const savedRepair = result.repair || paymentDraft;
     if (paymentDraft.id === "new" && savedRepair.id) navigate(`${detailBasePath}/${savedRepair.id}`, { force: true });
     toast(t("depositAdjustmentRecorded"));
+  };
+
+  const executeDepositAdjustment = async () => {
+    await executeDepositAdjustmentTo(depositTargetValue, depositTargetValid);
+  };
+
+  const executeDepositAdjustmentFromInput = async () => {
+    await executeDepositAdjustmentTo(draft.deposit, isMoneyInputValid(draft.deposit));
   };
 
   const executePaidAdjustment = async () => {
@@ -5340,10 +5354,10 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
                 <b>{money(dueAfterDeposit)}</b>
               </div>
               <PaymentMethodPicker value={["cash", "card"].includes(draft.paymentMethod) ? draft.paymentMethod : "cash"} onChange={(value) => updateDraft("paymentMethod", value)} t={t} />
-              <button type="button" className={`deposit-payment-button ${due < 0.01 ? "paid-in-full" : ""}`} disabled={!canRecordDepositPayment} title={depositPaymentDisabledReason} onClick={recordDepositPayment}>
-                <span>{t("recordDepositPayment")}</span>
+              <button type="button" className={`deposit-payment-button ${due < 0.01 ? "paid-in-full" : ""}`} disabled={depositButtonDisabled} title={depositButtonTitle} onClick={hasDeposit ? executeDepositAdjustmentFromInput : (depositButtonUsesDialog ? openDepositDialog : recordDepositPayment)}>
+                <span>{depositButtonLabel}</span>
               </button>
-              <small className="paid-close-helper">{t("depositPaidHelper")}</small>
+              <small className="paid-close-helper">{depositButtonHelper}</small>
               <PaymentHistory payments={draft.payments} t={t} lang={lang} />
             </section>
             <section className="payment-card totals-card">
