@@ -430,14 +430,13 @@ const uiText = {
     paymentFollowupHelper: "继续收款只保存流水；付清后选择是否保修",
     paymentReceivedButton: "已付款",
     paymentReceivedHelper: "已付清，订单已取走",
-    fullPaidNoWarrantyButton: "已全款付款未保修",
     fullPaidNoWarrantyHelper: "点击后标记已取走并打印 1 张维修小票",
-    finalPaymentButton: "已付款",
+    finalPaymentButton: "收尾款",
     recordDepositPayment: "订金收款",
     depositPaidHelper: "收完自动打印维修小票，不改订单状态",
     paidCloseHelper: "收完自动打印维修小票并已取走",
     paidConfirm: "确认收款并将单据修改为已取走？",
-    paidWarrantyButton: "已付款保修",
+    paidWarrantyButton: "启动保修",
     paidWarrantyHelper: "已付清，只改为已取走并启动保修",
     paymentConfirmTitle: "确认收款",
     paymentCalculatorHint: "首次付款按订金记录，后续付款按收款流水记录",
@@ -936,14 +935,13 @@ const uiText = {
     paymentFollowupHelper: "Los siguientes cobros solo guardan el movimiento",
     paymentReceivedButton: "Pagado",
     paymentReceivedHelper: "Pagado y entregado",
-    fullPaidNoWarrantyButton: "Pagado sin garantía",
     fullPaidNoWarrantyHelper: "Marca entregado e imprime 1 ticket de reparación",
     finalPaymentButton: "Cobrar restante",
     recordDepositPayment: "Cobrar depósito",
     depositPaidHelper: "Imprime ticket sin cambiar el estado",
     paidCloseHelper: "Imprime ticket y marca entregado",
     paidConfirm: "¿Confirmar el pago y marcar la orden como entregada?",
-    paidWarrantyButton: "Garantía pagada",
+    paidWarrantyButton: "Iniciar garantía",
     paidWarrantyHelper: "Ya está pagado: marca entregado e inicia garantía",
     paymentConfirmTitle: "Confirmar cobro",
     paymentCalculatorHint: "El primer cobro se registra como depósito; los siguientes como movimientos",
@@ -4526,9 +4524,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const depositDisabledReason = !repairFieldsComplete ? t("requiredRepairFields") : !canUsePaymentActions ? paymentBillingBlockedReason : !hasBillableTotal ? paymentBillingBlockedReason : !canManageDeposit ? t("paymentNoPendingAmount") : "";
   const paymentDisabledReason = !repairFieldsComplete ? t("requiredRepairFields") : !canUsePaymentActions ? paymentBillingBlockedReason : !hasBillableTotal || due < 0.01 ? t("paymentNoPendingAmount") : "";
   const paymentActionHelper = isFirstPayment ? t("paymentButtonHelper") : t("paymentFollowupHelper");
-  const paidCloseLabel = isPaidInFull ? (isPickedUp ? t("paymentReceivedButton") : (isWarrantyDraft ? t("warrantyMarkDoneButton") : t("fullPaidNoWarrantyButton"))) : t("paymentButton");
   const paidCloseHelper = isPaidInFull ? (isPickedUp ? t("paymentReceivedHelper") : (isWarrantyDraft ? t("warrantyMarkDoneHelper") : t("fullPaidNoWarrantyHelper"))) : paymentActionHelper;
-  const paidCloseTitle = isPaidInFull && !isPickedUp ? paidCloseHelper : paymentDisabledReason;
   const depositTargetValid = isMoneyInputValid(depositTargetAmount);
   const depositTargetValue = depositTargetValid ? roundMoney(depositTargetAmount) : 0;
   const depositAdjustmentDiff = roundMoney(depositTargetValue - depositCollected);
@@ -4546,6 +4542,10 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const finalPaymentReceivedAmount = roundMoney(finalPaymentReceived);
   const finalPaymentChange = Math.max(0, roundMoney(finalPaymentReceivedAmount - due));
   const finalPaymentReceivedInsufficient = paymentConfirm === "final" && finalPaymentReceivedAmount + 0.005 < due;
+  const finalPaymentActionSettled = isPaidInFull && isPickedUp;
+  const finalPaymentActionLabel = canStartPaidWarranty ? t("paidWarrantyButton") : (finalPaymentActionSettled ? t("paymentReceivedButton") : t("finalPaymentButton"));
+  const finalPaymentActionHelper = canStartPaidWarranty ? t("paidWarrantyHelper") : (finalPaymentActionSettled ? t("paymentReceivedHelper") : t("paidCloseHelper"));
+  const finalPaymentActionTitle = canStartPaidWarranty ? t("paidWarrantyHelper") : (finalPaymentActionSettled ? t("paymentReceivedHelper") : finalPaymentDisabledReason);
   const costTotal = repairCostAmount(draft);
   const profit = total - costTotal;
   const discountPercentValue = subtotal > 0 ? roundMoney((parseMoneyInput(draft.discountAmount) / subtotal) * 100) : 0;
@@ -5359,10 +5359,10 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
               <div className="totals-line totals-main"><span>{t("total")}</span><b>{money(total)}</b></div>
               <div className="totals-line totals-deposit"><span>{t("paidAmount")}</span><b>- {money(paidTotal)}</b></div>
               <div className="totals-line totals-due"><span>{t("due")}</span><b>{money(due)}</b></div>
-              <button type="button" className={`paid-close-button ${canStartPaidWarranty ? "paid-warranty-button" : ""}`} disabled={!canRecordFinalPayment && !canStartPaidWarranty} title={canStartPaidWarranty ? t("paidWarrantyHelper") : finalPaymentDisabledReason} onClick={canStartPaidWarranty ? startPaidWarranty : recordPaymentAndClose}>
-                <span>{canStartPaidWarranty ? t("paidWarrantyButton") : t("finalPaymentButton")}</span>
+              <button type="button" className={`paid-close-button ${canStartPaidWarranty ? "paid-warranty-button" : ""}`} disabled={!canRecordFinalPayment && !canStartPaidWarranty} title={finalPaymentActionTitle} onClick={canStartPaidWarranty ? startPaidWarranty : recordPaymentAndClose}>
+                <span>{finalPaymentActionLabel}</span>
               </button>
-              <small className="paid-close-helper">{canStartPaidWarranty ? t("paidWarrantyHelper") : t("paidCloseHelper")}</small>
+              <small className="paid-close-helper">{finalPaymentActionHelper}</small>
               <div className="receipt-send-actions">
                 <ActionSurface
                   as="a"

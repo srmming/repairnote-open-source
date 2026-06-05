@@ -3191,13 +3191,13 @@ button:disabled {
 
 .totals-main {
   color: hsl(var(--foreground));
-  font-size: 1rem;
+  font-size: 0.9375rem;
   font-weight: 800;
 }
 
 .totals-main b {
   color: hsl(var(--foreground));
-  font-size: 1.875rem;
+  font-size: 1.5rem;
   line-height: 1;
 }
 
@@ -3208,13 +3208,14 @@ button:disabled {
 
 .totals-due {
   color: hsl(var(--foreground));
-  font-size: 1rem;
+  font-size: 1.125rem;
   font-weight: 800;
 }
 
 .totals-due b {
   color: hsl(var(--foreground));
-  font-size: 1.125rem;
+  font-size: 1.875rem;
+  line-height: 1;
 }
 
 .paid-close-button {
@@ -7534,7 +7535,11 @@ button:disabled {
   }
 
   .totals-main b {
-    font-size: 1.375rem;
+    font-size: 1.25rem;
+  }
+
+  .totals-due b {
+    font-size: 1.5rem;
   }
 }
 
