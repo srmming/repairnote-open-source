@@ -433,6 +433,7 @@ const uiText = {
     fullPaidNoWarrantyHelper: "点击后标记已取走并打印 1 张维修小票",
     finalPaymentButton: "收尾款",
     recordDepositPayment: "订金收款",
+    recordDepositAndCreate: "创建订单并收订金",
     depositPaidHelper: "收完自动打印维修小票，不改订单状态",
     paidCloseHelper: "收完自动打印维修小票并已取走",
     paidConfirm: "确认收款并将单据修改为已取走？",
@@ -938,6 +939,7 @@ const uiText = {
     fullPaidNoWarrantyHelper: "Marca entregado e imprime 1 ticket de reparación",
     finalPaymentButton: "Cobrar restante",
     recordDepositPayment: "Cobrar depósito",
+    recordDepositAndCreate: "Crear orden y cobrar depósito",
     depositPaidHelper: "Imprime ticket sin cambiar el estado",
     paidCloseHelper: "Imprime ticket y marca entregado",
     paidConfirm: "¿Confirmar el pago y marcar la orden como entregada?",
@@ -4514,7 +4516,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const canRecordPayment = canUsePaymentActions && hasBillableTotal && due >= 0.01;
   const canManageDeposit = canUsePaymentActions && hasBillableTotal && (hasDeposit || due >= 0.01 || (hasPaymentActivity && isPaidInFull));
   const usePaidAdjustment = hasPaymentActivity && !hasDeposit;
-  const depositButtonLabel = hasDeposit ? t("depositManageButton") : (usePaidAdjustment ? t("paymentManageButton") : t("recordDepositPayment"));
+  const depositButtonLabel = hasDeposit ? t("depositManageButton") : (usePaidAdjustment ? t("paymentManageButton") : (draft.id === "new" ? t("recordDepositAndCreate") : t("recordDepositPayment")));
   const depositButtonHelper = hasDeposit
     ? t("depositAdjustHelper")
     : usePaidAdjustment
@@ -4787,6 +4789,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
     const selectedMethod = ["cash", "card"].includes(draft.paymentMethod) ? draft.paymentMethod : "cash";
     const payments = paymentsForDraftWithAdjustments({ ...draft, deposit: depositAmount }, t, selectedMethod);
     const depositDraft = { ...draft, paymentMethod: selectedMethod, payments, deposit: depositAmount };
+    const shouldNavigateToCreatedRepair = depositDraft.id === "new";
     setRepairDraft(depositDraft);
     const result = await saveRepair(depositDraft, { stayOnPage: true, deferNavigation: true });
     if (!result) {
@@ -4800,7 +4803,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
     const savedDue = Math.max(0, savedTotal - repairPaidAmount(savedRepair));
     const savedPublicUrl = savedRepair.publicToken ? buildPublicStatusUrl(data.settings, savedRepair.publicToken) : publicUrl;
     const printed = await printRepair("receipt", savedRepair, savedClient, { subtotal: savedSubtotal, total: savedTotal, due: savedDue, qrDataUrl: "", publicUrl: savedPublicUrl, settings: data.settings, printWindow });
-    if (depositDraft.id === "new" && savedRepair.id) navigate(`/dashboard/repairs/${savedRepair.id}`, { force: true });
+    if (shouldNavigateToCreatedRepair && savedRepair.id) navigate(`${detailBasePath}/${savedRepair.id}`, { force: true });
     toast(printed ? t("paymentRecorded") : t("paymentRecordedPrintFailed"));
   };
 
@@ -5345,7 +5348,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
                 <span>{t("deposit")}</span>
                 <div className="currency-input">
                   <span>€</span>
-                  <Input type="number" value={draft.deposit} onChange={(event) => updateDraft("deposit", event.target.value)} />
+                  <Input type="number" value={draft.deposit} onChange={(event) => updateDraft("deposit", event.target.value)} onBlur={() => { if (String(draft.deposit ?? "").trim() === "") updateDraft("deposit", 0); }} />
                 </div>
               </label>
               <div className="pending-after-deposit">
@@ -6935,8 +6938,10 @@ function normalizeRepairDraft(repair) {
     internalNote: repair.internalNote || "",
     technicianId: repair.technicianId || "",
     technicianName: repair.technicianName || "",
-    discountAmount: repair.discountAmount ?? 0,
-    costAmount: repair.costAmount ?? 0,
+    budget: nonNegativeMoney(repair.budget),
+    deposit: nonNegativeMoney(repair.deposit),
+    discountAmount: nonNegativeMoney(repair.discountAmount),
+    costAmount: nonNegativeMoney(repair.costAmount),
     frontPhoto: repair.frontPhoto || "",
     backPhoto: repair.backPhoto || "",
     signatureDataUrl: repair.signatureDataUrl || "",
@@ -6949,8 +6954,8 @@ function normalizeRepairDraft(repair) {
     warrantyResolution: repair.warrantyResolution || "",
     warrantyChargeable: Boolean(repair.warrantyChargeable),
     paymentMethod: repair.paymentMethod || "none",
-    itemsTotal: repair.itemsTotal ?? 0,
-    itemsCostTotal: repair.itemsCostTotal ?? 0,
+    itemsTotal: nonNegativeMoney(repair.itemsTotal),
+    itemsCostTotal: nonNegativeMoney(repair.itemsCostTotal),
     itemsCount: repair.itemsCount ?? items.length,
     itemsSummary: repair.itemsSummary || "",
     itemsLoaded: repair.itemsLoaded !== false,
@@ -7016,9 +7021,9 @@ function normalizeRepairItem(item = {}) {
   return {
     ...item,
     name: item.name || "",
-    qty: item.qty ?? 0,
-    price: item.price ?? 0,
-    cost: item.cost ?? 0
+    qty: nonNegativeMoney(item.qty),
+    price: nonNegativeMoney(item.price),
+    cost: nonNegativeMoney(item.cost)
   };
 }
 
@@ -7127,9 +7132,13 @@ function roundMoney(value) {
   return Math.round(parseMoneyInput(value) * 100) / 100;
 }
 
+function nonNegativeMoney(value) {
+  return Math.max(0, roundMoney(value));
+}
+
 function repairPaymentsForDisplay(repair, t = makeT("zh")) {
   const payments = Array.isArray(repair.payments) ? repair.payments.map(normalizePaymentDraft).filter((payment) => Math.abs(payment.amount) >= 0.005) : [];
-  if (payments.length || !Number(repair.deposit || 0)) return payments;
+  if (payments.length || !shouldUseLegacyDeposit(repair)) return payments;
   return [{ id: `legacy-${repair.id}`, amount: Number(repair.deposit || 0), method: "ledger", note: t("depositPayment"), paidAt: repair.repairTime || repair.createdAt || "" }];
 }
 
@@ -7137,13 +7146,17 @@ function repairPaidAmount(repair) {
   const payments = Array.isArray(repair.payments) ? repair.payments.map(normalizePaymentDraft) : [];
   const paid = paymentTotal(payments);
   if (payments.length) return paid;
-  return parseMoneyInput(repair.deposit);
+  return shouldUseLegacyDeposit(repair) ? parseMoneyInput(repair.deposit) : 0;
 }
 
 function repairDepositAmount(repair) {
   const payments = Array.isArray(repair.payments) ? repair.payments.map(normalizePaymentDraft) : [];
-  if (!payments.length) return parseMoneyInput(repair.deposit);
+  if (!payments.length) return shouldUseLegacyDeposit(repair) ? parseMoneyInput(repair.deposit) : 0;
   return Math.max(0, roundMoney(paymentTotal(payments.filter((payment) => isDepositPayment(payment) || isDepositAdjustment(payment)))));
+}
+
+function shouldUseLegacyDeposit(repair) {
+  return repair?.id && repair.id !== "new" && parseMoneyInput(repair.deposit) >= 0.01;
 }
 
 function formatPaymentDate(value, lang = "zh") {
