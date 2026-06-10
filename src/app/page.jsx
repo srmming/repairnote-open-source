@@ -114,6 +114,7 @@ import {
 
 const ICON = { size: 16, strokeWidth: 1.75 };
 const ICON_SM = { size: 14, strokeWidth: 1.75 };
+const MONEY_INPUT_PROPS = { type: "text", inputMode: "decimal", pattern: "[0-9]*[.,]?[0-9]*" };
 
 const STORAGE_KEY = "repairnote-next-v1";
 const THEME_STORAGE_KEY = "repairnote-theme";
@@ -4955,27 +4956,11 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   };
 
   const appendAdjustmentTargetKey = (key) => {
-    setDepositTargetAmount((current) => {
-      if (key === "clear") return "";
-      if (key === "backspace") return String(current || "").slice(0, -1);
-      const value = String(current || "");
-      if (key === "." && value.includes(".")) return value;
-      const next = `${value}${key}`;
-      if (!/^\d*\.?\d{0,2}$/.test(next)) return value;
-      return next.replace(/^0+(\d)/, "$1");
-    });
+    setDepositTargetAmount((current) => appendMoneyInputKey(current, key));
   };
 
   const appendPaymentKey = (key) => {
-    setPaymentReceived((current) => {
-      if (key === "clear") return "";
-      if (key === "backspace") return String(current || "").slice(0, -1);
-      const value = String(current || "");
-      if (key === "." && value.includes(".")) return value;
-      const next = `${value}${key}`;
-      if (!/^\d*\.?\d{0,2}$/.test(next)) return value;
-      return next.replace(/^0+(\d)/, "$1");
-    });
+    setPaymentReceived((current) => appendMoneyInputKey(current, key));
   };
 
   const confirmPaymentOnEnter = (event) => {
@@ -5348,7 +5333,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
                 <span>{t("deposit")}</span>
                 <div className="currency-input">
                   <span>€</span>
-                  <Input type="number" value={draft.deposit} onChange={(event) => updateDraft("deposit", event.target.value)} onBlur={() => { if (String(draft.deposit ?? "").trim() === "") updateDraft("deposit", 0); }} />
+                  <Input {...MONEY_INPUT_PROPS} value={draft.deposit} onChange={(event) => updateDraft("deposit", event.target.value)} onBlur={() => { if (String(draft.deposit ?? "").trim() === "") updateDraft("deposit", 0); }} />
                 </div>
               </label>
               <div className="pending-after-deposit">
@@ -5370,7 +5355,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
               </div>
               <label className="discount-percent-field">
                 <span>{t("discountPercent")}</span>
-                <Input type="number" value={Number.isFinite(discountPercentValue) ? discountPercentValue : 0} onChange={(event) => updateDiscountPercent(event.target.value)} />
+                <Input {...MONEY_INPUT_PROPS} value={Number.isFinite(discountPercentValue) ? discountPercentValue : 0} onChange={(event) => updateDiscountPercent(event.target.value)} />
               </label>
               <div className="totals-divider" />
               <div className="totals-line totals-main"><span>{t("total")}</span><b>{money(total)}</b></div>
@@ -5456,7 +5441,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
           <FormControlLabel className="final-payment-received-field">
             <span>{t("finalPaymentReceiveAmount")}</span>
             <Input
-              type="number"
+              {...MONEY_INPUT_PROPS}
               value={finalPaymentReceived}
               onChange={(event) => setFinalPaymentReceived(event.target.value)}
             />
@@ -5480,7 +5465,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
           <FormControlLabel className="final-payment-received-field">
             <span>{t("paymentTargetAmount")}</span>
             <Input
-              inputMode="decimal"
+              {...MONEY_INPUT_PROPS}
               value={depositTargetAmount}
               onChange={(event) => setDepositTargetAmount(event.target.value)}
               onKeyDown={confirmPaidAdjustmentOnEnter}
@@ -5515,7 +5500,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
           <FormControlLabel className="final-payment-received-field">
             <span>{t("depositTargetAmount")}</span>
             <Input
-              inputMode="decimal"
+              {...MONEY_INPUT_PROPS}
               value={depositTargetAmount}
               onChange={(event) => setDepositTargetAmount(event.target.value)}
               onKeyDown={confirmDepositAdjustmentOnEnter}
@@ -5551,7 +5536,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
           <FormControlLabel className="final-payment-received-field">
             <span>{t("finalPaymentReceiveAmount")}</span>
             <Input
-              type="number"
+              {...MONEY_INPUT_PROPS}
               value={paymentReceived}
               onChange={(event) => setPaymentReceived(event.target.value)}
               onKeyDown={confirmPaymentOnEnter}
@@ -6080,8 +6065,8 @@ function ModalForm({ modal, data, saveData, saveClientRecord, saveStaffRecord, s
         }
         if (type === "brand") return upsert(state, "brands", modal.id, { id: modal.id || id(), name: form.name?.trim() || "" });
         if (type === "model") return upsert(state, "models", modal.id, { id: modal.id || id(), brandId: modal.brandId, name: form.name?.trim() || "" });
-        if (type === "service") return upsert(state, "services", modal.id, { id: modal.id || id(), defaultName: form.defaultName?.trim() || "", category: fixedCategory || normalizeProductCategory(form.category), zh: form.zh || "", es: form.es || "", price: Number(form.price || 0) });
-        if (type === "part") return upsert(state, "parts", modal.id, { id: modal.id || id(), defaultName: form.defaultName?.trim() || "", category: fixedCategory || normalizeProductCategory(form.category), zh: form.zh || "", es: form.es || "", price: Number(form.price || 0) });
+        if (type === "service") return upsert(state, "services", modal.id, { id: modal.id || id(), defaultName: form.defaultName?.trim() || "", category: fixedCategory || normalizeProductCategory(form.category), zh: form.zh || "", es: form.es || "", price: parseMoneyInput(form.price) });
+        if (type === "part") return upsert(state, "parts", modal.id, { id: modal.id || id(), defaultName: form.defaultName?.trim() || "", category: fixedCategory || normalizeProductCategory(form.category), zh: form.zh || "", es: form.es || "", price: parseMoneyInput(form.price) });
         if (type === "attribute") return upsert(state, "attributes", modal.id, { id: modal.id || id(), groupName: form.groupName || "其他", defaultName: form.defaultName?.trim() || "", zh: form.zh || "", es: form.es || "" });
         if (type === "staff") return state;
         if (type === "technician") return upsert(state, "technicians", modal.id, { id: modal.id || id(), name: form.name?.trim() || "", phone: form.phone || "", email: form.email || "", color: normalizeTechnicianColor(form.color), active: form.active !== false, sortOrder: form.sortOrder });
@@ -6179,7 +6164,7 @@ function ModalForm({ modal, data, saveData, saveClientRecord, saveStaffRecord, s
         {(type === "service" || type === "part") && !fixedCategory ? <Field className="col-6"><Input value={form.category || ""} onChange={(event) => update("category", event.target.value)} placeholder={t("productCategory")} list={`${type}-category-list`} /><datalist id={`${type}-category-list`}>{productCategories(data[type === "service" ? "services" : "parts"], type === "service" ? data.settings?.productServiceCategories : data.settings?.productPartCategories, t).map((category) => <option key={category} value={category} />)}</datalist></Field> : null}
         <Field className="col-6"><Input value={form.zh || ""} onChange={(event) => update("zh", event.target.value)} placeholder={t("chinese")} /></Field>
         <Field className="col-6"><Input value={form.es || ""} onChange={(event) => update("es", event.target.value)} placeholder={t("spanish")} /></Field>
-        {type === "service" || type === "part" ? <Field className="col-4"><Input type="number" value={form.price || 0} onChange={(event) => update("price", event.target.value)} placeholder={t("price")} /></Field> : null}
+        {type === "service" || type === "part" ? <Field className="col-4"><Input {...MONEY_INPUT_PROPS} value={form.price || 0} onChange={(event) => update("price", event.target.value)} placeholder={t("price")} /></Field> : null}
       </FieldGroup>
       {renderFooter()}
     </form>
@@ -7021,10 +7006,19 @@ function normalizeRepairItem(item = {}) {
   return {
     ...item,
     name: item.name || "",
-    qty: nonNegativeMoney(item.qty),
-    price: nonNegativeMoney(item.price),
-    cost: nonNegativeMoney(item.cost)
+    qty: normalizeMoneyDraftValue(item.qty),
+    price: normalizeMoneyDraftValue(item.price),
+    cost: normalizeMoneyDraftValue(item.cost)
   };
+}
+
+function normalizeMoneyDraftValue(value) {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return "";
+    if (/^\d*[.,]?\d{0,2}$/.test(trimmed)) return trimmed;
+  }
+  return nonNegativeMoney(value);
 }
 
 function normalizeStatus(status) {
@@ -7358,6 +7352,16 @@ function isMoneyInputValid(value) {
   if (!normalized) return false;
   if (!/^(?:\d+\.?\d{0,2}|\.\d{1,2})$/.test(normalized)) return false;
   return Number.isFinite(Number(normalized));
+}
+
+function appendMoneyInputKey(current, key) {
+  if (key === "clear") return "";
+  if (key === "backspace") return String(current || "").slice(0, -1);
+  const value = String(current || "");
+  if (key === "." && /[.,]/.test(value)) return value;
+  const next = `${value}${key}`;
+  if (!/^\d*[.,]?\d{0,2}$/.test(next)) return value;
+  return next.replace(/^0+(\d)/, "$1");
 }
 
 function reportRange(preset = "month", customStart = "", customEnd = "") {
