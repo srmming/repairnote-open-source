@@ -46,9 +46,9 @@
 
 ## 阶段 2：报表/财务改服务端计算
 
-- [ ] **T2.1** 重写 `/api/reports/overview` 为 SQL/Prisma 聚合（禁止 getBootstrapData 全量读内存），口径对齐前端：`chargeAmount`/`repairCostAmount`/`repairPaidAmount`/`isCanceledRepair`；新增趋势数据（日/周/月 × 金额/单量）与 topModels(limit 0)。验收：接口返回含 summary/technicianStats/topModels/trend。
-- [ ] **T2.2** 新增 GET `/api/reports/finance`：汇总（receivable/cost/received/unpaid）+ 付款流水（分页、搜索、时间范围）+ 未收款列表（分页、搜索）。SQL/Prisma 聚合实现。验收：curl 返回结构完整。
-- [ ] **T2.3** 对账脚本 `scripts/verify-reports-parity.mjs`：同一数据库下，用旧前端口径（从 page.jsx 复刻的纯函数）全量计算 vs 新接口输出，逐项对比 overview 与 finance 汇总。验收：脚本运行输出全部一致（PASS）。**全部一致后才允许执行 T2.4/T2.5。**
+- [x] **T2.1** 重写 `/api/reports/overview` 为 SQL/Prisma 聚合（禁止 getBootstrapData 全量读内存），口径对齐前端：`chargeAmount`/`repairCostAmount`/`repairPaidAmount`/`isCanceledRepair`；新增趋势数据（日/周/月 × 金额/单量）与 topModels(limit 0)。验收：接口返回含 summary/technicianStats/topModels/trend。
+- [x] **T2.2** 新增 GET `/api/reports/finance`：汇总（receivable/cost/received/unpaid）+ 付款流水（分页、搜索、时间范围）+ 未收款列表（分页、搜索）。SQL/Prisma 聚合实现。验收：curl 返回结构完整。
+- [x] **T2.3** 对账脚本 `scripts/verify-reports-parity.mjs`：同一数据库下，用旧前端口径（从 page.jsx 复刻的纯函数）全量计算 vs 新接口输出，逐项对比 overview 与 finance 汇总。验收：脚本运行输出全部一致（PASS）。**全部一致后才允许执行 T2.4/T2.5。**
 - [ ] **T2.4** ReportsPage 切换到 `/api/reports/overview`，移除本地全量计算。验收：页面数字与切换前一致。
 - [ ] **T2.5** FinancePage 切换到 `/api/reports/finance`，流水/未收款分页加载。验收：汇总与切换前一致，流水分页可用。
 
