@@ -3726,28 +3726,29 @@ function TechnicianOrdersPage({ data, technicianKey, navigate, filters, setFilte
 
 function ReportsPage({ data, filters, setFilters, navigate, lang, t }) {
   const range = reportRange(filters.reportPreset, filters.reportStart, filters.reportEnd);
-  const technicianById = useMemo(() => new Map((data.technicians || []).map((technician) => [technician.id, technician])), [data.technicians]);
-  const technicianByName = useMemo(() => technicianNameLookup(data.technicians || []), [data.technicians]);
-  if (data._fullLoaded === false) return <section className="page"><Empty>{t("loading")}</Empty></section>;
-  const orders = data.repairs.filter((repair) => {
-    if (isCanceledRepair(repair)) return false;
-    const day = String(repair.repairTime || "").slice(0, 10);
-    return (!range.start || day >= range.start) && (!range.end || day <= range.end);
-  });
-  const repairs = orders.filter((repair) => (repair.orderType || "repair") !== "warranty");
-  const warranties = orders.filter((repair) => repair.orderType === "warranty");
-  const amount = (repair) => isHistoricalAmountRepair(repair, technicianById, technicianByName) ? 0 : chargeAmount(repair);
-  const cost = (repair) => isHistoricalAmountRepair(repair, technicianById, technicianByName) ? 0 : repairCostAmount(repair);
-  const revenue = orders.reduce((sum, repair) => sum + amount(repair), 0);
-  const costTotal = orders.reduce((sum, repair) => sum + cost(repair), 0);
-  const profit = revenue - costTotal;
-  const received = orders.reduce((sum, repair) => sum + Math.min(amount(repair), repairPaidAmount(repair)), 0);
-  const unpaid = orders.reduce((sum, repair) => sum + Math.max(0, amount(repair) - repairPaidAmount(repair)), 0);
-  const topModels = topBy(orders, (repair) => repair.model || t("unset"), amount, { limit: 0 });
-  const technicianRows = technicianStats(orders, data.technicians || [], amount, cost, t);
   const trendGranularity = filters.reportTrendGranularity || "day";
   const trendMetric = filters.reportTrendMetric || "both";
-  const trendRows = revenueTrendRows(orders, amount, trendGranularity);
+  // 服务端聚合：口径经 scripts/verify-reports-parity.mjs 与旧前端全量计算逐项对账一致。
+  const [report, setReport] = useState(null);
+  useEffect(() => {
+    let active = true;
+    const params = new URLSearchParams({ start: range.start || "", end: range.end || "", granularity: trendGranularity });
+    apiGet(`/api/reports/overview?${params.toString()}`)
+      .then((res) => { if (active) setReport(res); })
+      .catch(() => { if (active) setReport({ summary: {}, technicianRows: [], topModels: [], trendRows: [] }); });
+    return () => { active = false; };
+  }, [range.start, range.end, trendGranularity, data._revision]);
+  if (!report) return <section className="page"><Empty>{t("loading")}</Empty></section>;
+  const summary = report.summary || {};
+  const revenue = Number(summary.revenue || 0);
+  const costTotal = Number(summary.cost || 0);
+  const profit = Number(summary.profit || 0);
+  const unpaid = Number(summary.unpaid || 0);
+  const repairs = { length: Number(summary.repairCount || 0) };
+  const warranties = { length: Number(summary.warrantyCount || 0) };
+  const topModels = (report.topModels || []).map((row) => ({ ...row, name: row.name || t("unset") }));
+  const technicianRows = (report.technicianRows || []).map((row) => ({ ...row, name: row.name || t("unassignedTechnician") }));
+  const trendRows = report.trendRows || [];
   const openTechnicianOrders = (row) => {
     setFilters({
       ...filters,
@@ -3856,115 +3857,31 @@ function ReportsPage({ data, filters, setFilters, navigate, lang, t }) {
 }
 
 function FinancePage({ data, filters, setFilters, navigate, lang, t }) {
-  const repairs = data.repairs || [];
-  const clients = data.clients || [];
   const range = reportRange(filters.financePreset, filters.financeStart, filters.financeEnd);
   const search = (filters.financeSearch || "").trim().toLowerCase();
-  const clientLookup = useMemo(() => new Map(clients.map((client) => [client.id, client])), [clients]);
-  const technicianById = useMemo(() => new Map((data.technicians || []).map((technician) => [technician.id, technician])), [data.technicians]);
-  const technicianByName = useMemo(() => technicianNameLookup(data.technicians || []), [data.technicians]);
-  const finance = useMemo(() => {
-    const paymentRows = [];
-    const unpaidRows = [];
-    let receivable = 0;
-    let costTotal = 0;
-    let received = 0;
-    let unpaid = 0;
-    const matchesSearch = (...values) => {
-      if (!search) return true;
-      return values.join(" ").toLowerCase().includes(search);
-    };
-
-    for (const repair of repairs) {
-      const client = clientLookup.get(repair.clientId) || EMPTY_CLIENT;
-      const ticket = repair.ticket || "-";
-      const businessOrder = !isCanceledRepair(repair);
-      const skipAmount = isHistoricalAmountRepair(repair, technicianById, technicianByName);
-      const orderInRange = businessOrder && dateInRange(repair.repairTime || repair.createdAt, range.start, range.end);
-      if (orderInRange && !skipAmount) {
-        const total = chargeAmount(repair);
-        const paid = repairPaidAmount(repair);
-        const cost = repairCostAmount(repair);
-        const due = Math.max(0, total - paid);
-        receivable += total;
-        costTotal += cost;
-        unpaid += due;
-        if (due > 0.005 && matchesSearch(ticket, client.name, client.phone, repair.brand, repair.model, repair.issue)) {
-          unpaidRows.push({ repair, client, total, paid, cost, due });
-        }
-      }
-
-      if (!businessOrder || skipAmount) continue;
-      for (const payment of repairPaymentsForDisplay(repair, t)) {
-        const paidAt = payment.paidAt || repair.repairTime || repair.createdAt;
-        if (!dateInRange(paidAt, range.start, range.end)) continue;
-        if (!matchesSearch(ticket, client.name, client.phone, payment.note)) continue;
-        const amount = Number(payment.amount || 0);
-        received += amount;
-        paymentRows.push({
-          ...payment,
-          paidAt,
-          repair,
-          client,
-          ticket,
-          clientName: client.name || "-",
-          clientPhone: client.phone || ""
-        });
-      }
-    }
-
-    paymentRows.sort((a, b) => String(b.paidAt || "").localeCompare(String(a.paidAt || "")));
-    unpaidRows.sort((a, b) => b.due - a.due);
-    return {
-      paymentRows,
-      unpaidRows,
-      receivable,
-      costTotal,
-      received,
-      unpaid
-    };
-  }, [repairs, clientLookup, technicianById, technicianByName, range.start, range.end, search, t]);
-  const paymentPage = paginate(finance.paymentRows, filters.financePaymentsPage, FINANCE_PAGE_SIZE);
-  const unpaidPage = paginate(finance.unpaidRows, filters.financeUnpaidPage, FINANCE_PAGE_SIZE);
-  const daily = useMemo(() => {
-    const todayKey = dateOnly(new Date());
-    let collected = 0;
-    let depositCollected = 0;
-    let finalCollected = 0;
-    let paymentCount = 0;
-    let orderCount = 0;
-    let unpaid = 0;
-    let cost = 0;
-    let profit = 0;
-    for (const repair of repairs) {
-      const orderDay = String(repair.repairTime || repair.createdAt || "").slice(0, 10);
-      const businessOrder = !isCanceledRepair(repair);
-      const skipAmount = isHistoricalAmountRepair(repair, technicianById, technicianByName);
-      if (orderDay === todayKey && businessOrder) {
-        orderCount += 1;
-        if (!skipAmount) {
-          const total = chargeAmount(repair);
-          const orderCost = repairCostAmount(repair);
-          unpaid += Math.max(0, total - repairPaidAmount(repair));
-          cost += orderCost;
-          profit += total - orderCost;
-        }
-      }
-      if (!businessOrder || skipAmount) continue;
-      for (const payment of repairPaymentsForDisplay(repair, t)) {
-        const paidAt = payment.paidAt || repair.repairTime || repair.createdAt;
-        if (dateInRange(paidAt, todayKey, todayKey)) {
-          const amount = Number(payment.amount || 0);
-          collected += amount;
-          paymentCount += 1;
-          const note = String(payment.note || "").toLowerCase();
-          if (note.includes("订金") || note.includes("depósito") || note.includes("deposito")) depositCollected += amount;
-          if (note.includes("尾款") || note.includes("pago final")) finalCollected += amount;
-        }
-      }
-    }
-    return { collected, depositCollected, finalCollected, paymentCount, orderCount, unpaid, cost, profit };
-  }, [repairs, technicianById, technicianByName, t]);
+  // 防抖后的搜索词：避免每次按键都请求服务器。
+  const [committedSearch, setCommittedSearch] = useState(search);
+  useEffect(() => {
+    const handle = setTimeout(() => setCommittedSearch(search), 250);
+    return () => clearTimeout(handle);
+  }, [search]);
+  // 服务端聚合与分页：口径经 scripts/verify-reports-parity.mjs 与旧前端全量计算逐项对账一致。
+  const [financeData, setFinanceData] = useState(null);
+  useEffect(() => {
+    let active = true;
+    const params = new URLSearchParams({
+      start: range.start || "",
+      end: range.end || "",
+      q: committedSearch,
+      paymentsPage: String(filters.financePaymentsPage || 1),
+      unpaidPage: String(filters.financeUnpaidPage || 1),
+      pageSize: String(FINANCE_PAGE_SIZE)
+    });
+    apiGet(`/api/reports/finance?${params.toString()}`)
+      .then((res) => { if (active) setFinanceData(res); })
+      .catch(() => { if (active) setFinanceData({ summary: {}, daily: {}, payments: { rows: [], total: 0, page: 1 }, unpaidOrders: { rows: [], total: 0, page: 1 } }); });
+    return () => { active = false; };
+  }, [range.start, range.end, committedSearch, filters.financePaymentsPage, filters.financeUnpaidPage, data._revision]);
   const updatePreset = (value) => {
     if (value === "custom") {
       setFilters({
@@ -3994,7 +3911,32 @@ function FinancePage({ data, filters, setFilters, navigate, lang, t }) {
     setFilters(next);
   };
   const clearDateRange = () => setFilters({ ...filters, financePreset: "custom", financeStart: "", financeEnd: "", financePaymentsPage: 1, financeUnpaidPage: 1 });
-  if (data._fullLoaded === false) return <section className="page"><Empty>{t("loading")}</Empty></section>;
+  if (!financeData) return <section className="page"><Empty>{t("loading")}</Empty></section>;
+  const finance = {
+    receivable: Number(financeData.summary?.receivable || 0),
+    costTotal: Number(financeData.summary?.costTotal || 0),
+    received: Number(financeData.summary?.received || 0),
+    unpaid: Number(financeData.summary?.unpaid || 0),
+    paymentCount: Number(financeData.summary?.paymentCount || 0)
+  };
+  const daily = {
+    collected: 0, depositCollected: 0, finalCollected: 0, paymentCount: 0, orderCount: 0, unpaid: 0, cost: 0, profit: 0,
+    ...(financeData.daily || {})
+  };
+  const toPage = (block, mapRow) => ({
+    current: Number(block?.page || 1),
+    total: Number(block?.total || 0),
+    totalPages: Math.max(1, Math.ceil(Number(block?.total || 0) / FINANCE_PAGE_SIZE)),
+    items: (block?.rows || []).map(mapRow)
+  });
+  const paymentPage = toPage(financeData.payments, (row) => ({ ...row, repair: { id: row.repairId } }));
+  const unpaidPage = toPage(financeData.unpaidOrders, (row) => ({
+    repair: { id: row.repairId, ticket: row.ticket, status: row.status },
+    client: { name: row.clientName, phone: row.clientPhone },
+    total: row.total,
+    paid: row.paid,
+    due: row.due
+  }));
   return (
     <section className="page finance-page">
       <Card className="daily-business-card">
@@ -4037,7 +3979,7 @@ function FinancePage({ data, filters, setFilters, navigate, lang, t }) {
         <Metric title={t("unpaidAmount")} value={money(finance.unpaid)} />
         <Metric title={t("financeCost")} value={money(finance.costTotal)} />
         <Metric title={t("financeProfit")} value={money(finance.receivable - finance.costTotal)} />
-        <Metric title={t("paymentCount")} value={finance.paymentRows.length} />
+        <Metric title={t("paymentCount")} value={finance.paymentCount} />
       </div>
       <div className="finance-grid">
         <Card className="finance-main-card">
