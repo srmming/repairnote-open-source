@@ -31,7 +31,7 @@
 ## 阶段 0：基建与取证（无 UI 改动）
 
 - [ ] **T0.1** 40k 种子脚本：新增 `scripts/seed-40k.mjs`，可幂等生成约 40000 条维修单（含 items/payments/客户）供对账与压测。验收：脚本运行成功，输出 Repair 总数 ≈ 40000。
-- [ ] **T0.2** Prisma 索引补齐：为 Repair 新增 `@@index([technicianId])`、`@@index([technicianName])`（技师订单/看板查询）；核对 searchText 查询路径。只新增索引，不删改字段。验收：迁移文件生成，`git diff prisma/` 展示，`npx prisma migrate dev` 成功。
+- [x] **T0.2** Prisma 索引补齐：为 Repair 新增 `@@index([technicianId])`、`@@index([technicianName])`（技师订单/看板查询）；核对 searchText 查询路径。只新增索引，不删改字段。验收：迁移文件生成，`git diff prisma/` 展示，`npx prisma migrate dev` 成功。
 - [ ] **T0.3** search 接口补参数：`/api/repairs/search` 与 `searchRepairs()` 支持 `clientId`、`sourceRepairId`、`technicianKey`（id 或历史姓名或 unassigned）。验收：curl 三种参数各返回正确过滤结果。
 
 **检查点 CP0**：`npm run build` exit 0；commit。

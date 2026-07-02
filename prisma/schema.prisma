@@ -183,6 +183,8 @@ model Repair {
   @@index([repairTime])
   @@index([createdAt])
   @@index([ticketSort])
+  @@index([technicianId])
+  @@index([technicianName])
   // 当前服务端搜索用 searchText 的子串匹配（LIKE，与界面“包含”语义一致）。
   // 保留 FULLTEXT 以备将来切换到 ngram 全文检索（数据量更大时）；切换需改用 MATCH...AGAINST。
   @@fulltext([searchText])
