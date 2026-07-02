@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, startTransition } from "react";
 import { createPortal } from "react-dom";
 import QRCode from "qrcode";
 import {
@@ -111,6 +111,19 @@ import {
   Textarea,
   Toolbar
 } from "@/components/ui";
+import {
+  PAGE_PERMISSION_KEYS,
+  normalizeClientLevel,
+  normalizeData,
+  normalizePaymentDraft,
+  normalizeRepairDraft,
+  normalizeRepairItem,
+  normalizeStatus,
+  normalizeTechnicianColor,
+  normalizedPagePermissions,
+  nonNegativeMoney,
+  withSortOrders
+} from "@/lib/normalize-client";
 
 const ICON = { size: 16, strokeWidth: 1.75 };
 const ICON_SM = { size: 14, strokeWidth: 1.75 };
@@ -226,7 +239,6 @@ const statusClassMap = {
 };
 
 const warrantyStatusOrder = statusOrder;
-const PAGE_PERMISSION_KEYS = ["repairs", "clients", "categories", "modules", "services", "attributes", "technicians", "reports", "finance", "settings", "backup"];
 const LEGACY_WHATSAPP_PROGRESS_TEMPLATE = "Hola, puede consultar el estado de su reparación aquí: {url}";
 const DEFAULT_WHATSAPP_PROGRESS_TEMPLATE = `Hola {name},
 
@@ -1377,6 +1389,9 @@ export default function AppPage() {
   const preservingRepairDraftRouteRef = useRef("");
   const confirmedDataRef = useRef(data);
   const saveQueueRef = useRef(Promise.resolve());
+  const fullBootstrapRequestRef = useRef(null);
+  const fullBootstrapWorkerRef = useRef(null);
+  const fullBootstrapEpochRef = useRef(0);
   const lang = getLang(data.settings);
   const t = useMemo(() => makeT(lang), [lang]);
   const changeTheme = (nextTheme) => {
@@ -1515,6 +1530,10 @@ export default function AppPage() {
       setScanSearchMessage(t("noOrderFound"));
       return false;
     }
+    if (dataRef.current._fullLoaded === false) {
+      setScanSearchMessage(t("loading"));
+      return false;
+    }
     const repair = findRepairByTicket(dataRef.current.repairs || [], value);
     if (!repair) {
       setScanSearchQuery(scannedTicketValue(value) || value);
@@ -1531,22 +1550,86 @@ export default function AppPage() {
   }
 
   function openGlobalScanDialog() {
+    if (dataRef.current._fullLoaded === false) {
+      showToast(t("loading"));
+      return;
+    }
     setScanSearchQuery("");
     setScanSearchMessage("");
     setScanSearchOpen(true);
   }
 
+  function terminateFullBootstrapWorker() {
+    if (fullBootstrapWorkerRef.current) {
+      fullBootstrapWorkerRef.current.terminate();
+      fullBootstrapWorkerRef.current = null;
+    }
+  }
+
+  function applyMergedFullBootstrap(epoch, startRevision, fullNormalized) {
+    if (epoch !== fullBootstrapEpochRef.current) return;
+    const confirmedBefore = confirmedDataRef.current;
+    const merged = mergeFullBootstrap(confirmedBefore, fullNormalized, startRevision);
+    confirmedDataRef.current = merged;
+    const nextData = overlayOptimisticSnapshot(confirmedBefore, merged, dataRef.current);
+    dataRef.current = nextData;
+    startTransition(() => setData(nextData));
+    if (merged._fullLoaded === false) loadFullBootstrapInBackground();
+  }
+
+  function handleFullBootstrapFailure(epoch, error) {
+    if (epoch !== fullBootstrapEpochRef.current) return;
+    showToast(error?.message || t("loading"));
+    const fallback = { ...dataRef.current, _fullLoaded: true };
+    confirmedDataRef.current = fallback;
+    dataRef.current = fallback;
+    startTransition(() => setData(fallback));
+  }
+
+  function fetchFullBootstrapViaWorker(epoch) {
+    if (typeof Worker === "undefined") return Promise.reject(new Error("Worker unavailable"));
+    terminateFullBootstrapWorker();
+    const worker = new Worker(new URL("./bootstrap-worker.js", import.meta.url));
+    fullBootstrapWorkerRef.current = worker;
+    return new Promise((resolve, reject) => {
+      worker.onmessage = (event) => {
+        const message = event.data || {};
+        if (message.epoch !== epoch) return;
+        if (message.type === "ok") resolve(message.data);
+        else reject(new Error(message.message || "请求失败"));
+      };
+      worker.onerror = (event) => reject(new Error(event.message || "Worker failed"));
+      worker.postMessage({ type: "fetch", epoch });
+    }).finally(() => {
+      if (fullBootstrapWorkerRef.current === worker) {
+        worker.terminate();
+        fullBootstrapWorkerRef.current = null;
+      }
+    });
+  }
+
+  function fetchFullBootstrapViaMainThread(epoch) {
+    return apiGet("/api/bootstrap").then((fullRaw) => {
+      if (epoch !== fullBootstrapEpochRef.current) return null;
+      return normalizeData(fullRaw);
+    });
+  }
+
   async function bootstrap() {
+    fullBootstrapEpochRef.current += 1;
+    terminateFullBootstrapWorker();
+    fullBootstrapRequestRef.current = null;
     setLoading(true);
     try {
       const me = await apiGet("/api/auth/me");
       setSession(me.user);
       if (!me.user) return;
-      const nextData = await apiGet("/api/bootstrap");
-      const normalized = normalizeData(nextData);
+      const lightData = await apiGet("/api/bootstrap?scope=light");
+      const normalized = { ...normalizeData(lightData), _fullLoaded: false };
       confirmedDataRef.current = normalized;
       dataRef.current = normalized;
       setData(normalized);
+      loadFullBootstrapInBackground();
     } catch {
       setSession(null);
     } finally {
@@ -1554,7 +1637,28 @@ export default function AppPage() {
     }
   }
 
+  function loadFullBootstrapInBackground() {
+    const epoch = fullBootstrapEpochRef.current;
+    const startRevision = confirmedDataRef.current._revision || "";
+    const request = fetchFullBootstrapViaWorker(epoch)
+      .catch(() => fetchFullBootstrapViaMainThread(epoch))
+      .then((fullNormalized) => {
+        if (!fullNormalized) return;
+        applyMergedFullBootstrap(epoch, startRevision, fullNormalized);
+      })
+      .catch((error) => handleFullBootstrapFailure(epoch, error))
+      .finally(() => {
+        if (fullBootstrapRequestRef.current === request) fullBootstrapRequestRef.current = null;
+      });
+    fullBootstrapRequestRef.current = request;
+    return request;
+  }
+
   async function saveData(updater) {
+    if (dataRef.current._fullLoaded === false) {
+      showToast(t("loading"));
+      return false;
+    }
     const optimistic = typeof updater === "function" ? updater(dataRef.current) : updater;
     const queuedPayload = optimistic;
     dataRef.current = optimistic;
@@ -1568,7 +1672,7 @@ export default function AppPage() {
         const normalized = normalizeData(saved);
         confirmedDataRef.current = normalized;
         dataRef.current = normalized;
-        setData(normalized);
+        startTransition(() => setData(normalized));
         return true;
       } catch (error) {
         dataRef.current = confirmedDataRef.current;
@@ -1799,13 +1903,17 @@ export default function AppPage() {
   if (!session) {
     return <Login theme={theme} onThemeChange={changeTheme} onLogin={async (username, password) => {
       const result = await apiJson("/api/auth/login", "POST", { username, password });
-      const nextData = await apiGet("/api/bootstrap");
-      const normalized = normalizeData(nextData);
+      fullBootstrapEpochRef.current += 1;
+      terminateFullBootstrapWorker();
+      fullBootstrapRequestRef.current = null;
+      const lightData = await apiGet("/api/bootstrap?scope=light");
+      const normalized = { ...normalizeData(lightData), _fullLoaded: false };
       confirmedDataRef.current = normalized;
       dataRef.current = normalized;
       setData(normalized);
       setSession(result.user);
       navigate("/dashboard/repairs");
+      loadFullBootstrapInBackground();
     }} />;
   }
 
@@ -1822,6 +1930,9 @@ export default function AppPage() {
         setRepairTopbarSave(null);
         setRepairDraft(null);
         await apiJson("/api/auth/logout", "POST", {});
+        fullBootstrapEpochRef.current += 1;
+        terminateFullBootstrapWorker();
+        fullBootstrapRequestRef.current = null;
         setSession(null);
         navigate("/login", { force: true });
       }} />
@@ -1984,7 +2095,7 @@ function TopbarActions({ route, data, saveData, saveRepairRecord, deleteRepairRe
     || (path.startsWith("/dashboard/warranties/") && path !== "/dashboard/warranties/new")
   ) {
     const repairId = path.split("/").pop();
-    const existing = data.repairs.find((repair) => repair.id === repairId);
+    const existing = data.repairs.find((repair) => repair.id === repairId) || (repairDraft?.id === repairId ? repairDraft : null);
     if (!existing) return null;
     const draft = normalizeRepairDraft(repairDraft?.id === existing.id ? repairDraft : existing);
     const selectedClient = clientById(data, draft.clientId);
@@ -2208,13 +2319,6 @@ function canAccessPage(user, key) {
   return permissions.includes(key);
 }
 
-function normalizedPagePermissions(user) {
-  if (user?.isAdmin) return PAGE_PERMISSION_KEYS;
-  const rawPermissions = Array.isArray(user?.pagePermissions) ? user.pagePermissions : [];
-  const permissions = rawPermissions.map((key) => key === "warranties" ? "repairs" : key).filter((key) => PAGE_PERMISSION_KEYS.includes(key));
-  return [...new Set(permissions)];
-}
-
 function firstAllowedRoute(user) {
   if (user?.isAdmin) return "/dashboard/repairs";
   const key = normalizedPagePermissions(user)[0] || "repairs";
@@ -2270,7 +2374,23 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
   const technicianById = useMemo(() => new Map((data.technicians || []).map((technician) => [technician.id, technician])), [data.technicians]);
   const technicianByName = useMemo(() => technicianNameLookup(data.technicians || []), [data.technicians]);
   const historicalAmount = (repair) => isHistoricalAmountRepair(repair, technicianById, technicianByName);
-  const getClient = (clientId) => clientLookup.get(clientId) || EMPTY_CLIENT;
+  const getClient = (clientId, repair = null) => {
+    const fromLookup = clientLookup.get(clientId);
+    if (fromLookup) return fromLookup;
+    if (repair?.clientName || repair?.clientPhone || repair?.email) {
+      return {
+        ...EMPTY_CLIENT,
+        name: repair.clientName || "",
+        phone: repair.clientPhone || repair.phone || "",
+        level: normalizeClientLevel(repair.clientLevel),
+        docType: repair.docType || "DNI",
+        identity: repair.identity || "",
+        email: repair.email || "",
+        address: repair.address || ""
+      };
+    }
+    return EMPTY_CLIENT;
+  };
   // 防抖后的已提交搜索词：避免每次按键都触发服务端请求与金额聚合重算。
   const [committedSearch, setCommittedSearch] = useState(filters.repairsSearch || "");
   const [itemsDialog, setItemsDialog] = useState({ open: false, loading: false, repair: null });
@@ -2359,17 +2479,41 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
     navigate(`/dashboard/technicians/${encodeURIComponent(row.id)}`);
   };
   const setStatus = async (id, status) => {
-    const target = repairLookup.get(id);
-    if (!target || isOrderLocked(target, data.settings)) return;
+    let target = repairLookup.get(id);
+    if (!target) {
+      try {
+        const result = await apiGet(`/api/repairs/${encodeURIComponent(id)}`);
+        target = result.repair ? normalizeRepairDraft(result.repair) : null;
+      } catch {
+        target = null;
+      }
+    }
+    if (!target) {
+      toast(t("repairNotFound"));
+      return;
+    }
+    if (isOrderLocked(target, data.settings)) return;
     const nextStatus = normalizeStatus(status);
     if (nextStatus === "取消" && normalizeStatus(target.status) !== "取消" && !window.confirm(t("cancelLockConfirm"))) return;
-    const nextRepair = withStatusChange(target, nextStatus, getClient(target.clientId), data.settings);
+    const nextRepair = withStatusChange(target, nextStatus, getClient(target.clientId, target), data.settings);
     const ok = await saveRepairRecord(nextRepair);
     if (ok) toast(t("statusUpdated"));
   };
   const setTechnician = async (id, technicianValue) => {
-    const target = repairLookup.get(id);
-    if (!target || isOrderLocked(target, data.settings)) return;
+    let target = repairLookup.get(id);
+    if (!target) {
+      try {
+        const result = await apiGet(`/api/repairs/${encodeURIComponent(id)}`);
+        target = result.repair ? normalizeRepairDraft(result.repair) : null;
+      } catch {
+        target = null;
+      }
+    }
+    if (!target) {
+      toast(t("repairNotFound"));
+      return;
+    }
+    if (isOrderLocked(target, data.settings)) return;
     if (String(technicianValue || "").startsWith("legacy:")) return;
     const technician = technicianById.get(technicianValue);
     const nextRepair = {
@@ -2460,7 +2604,7 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
           <div className="mobile-order-card-list" data-smoke="mobile-order-cards">
             {page.items.length ? page.items.map((serverRow) => {
               const repair = repairLookup.get(serverRow.id) || serverRow;
-              const client = getClient(repair.clientId);
+              const client = getClient(repair.clientId, repair);
               const isWarranty = repair.orderType === "warranty";
               const amount = chargeAmount(repair);
               const cost = repairCostAmount(repair);
@@ -2500,7 +2644,7 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
             {page.items.length ? page.items.map((serverRow) => {
               // 优先用内存里（乐观更新后）的版本展示，避免内联改状态/技师后瞬间回弹到服务端旧值。
               const repair = repairLookup.get(serverRow.id) || serverRow;
-              const client = getClient(repair.clientId);
+              const client = getClient(repair.clientId, repair);
               const isWarranty = repair.orderType === "warranty";
               const amount = chargeAmount(repair);
               const cost = repairCostAmount(repair);
@@ -2713,6 +2857,8 @@ function QuickFindPage({ data, navigate, lang, t }) {
     };
   }, [cameraActive, repairs, t]);
 
+  if (data._fullLoaded === false) return <section className="page"><Empty>{t("loading")}</Empty></section>;
+
   return (
     <section className="page quick-find-page">
       <Card className="quick-find-card">
@@ -2860,6 +3006,7 @@ function ClientsPage({ data, saveData, deleteClientRecord, filters, setFilters, 
   }, [data.clients, filters.clientsFilter, filters.clientsSearch, filters.clientsSort, clientRepairsById]);
   const page = paginate(rows, filters.clientsPage, 20);
   const remove = async (clientId) => {
+    if (data._fullLoaded === false) return toast(t("loading"));
     if (data.repairs.some((repair) => repair.clientId === clientId)) return toast(t("cannotDeleteClient"));
     if (!confirm(t("confirmDeleteClient"))) return;
     const ok = deleteClientRecord
@@ -2868,6 +3015,7 @@ function ClientsPage({ data, saveData, deleteClientRecord, filters, setFilters, 
     if (!ok) return;
   };
   const openClientOrders = (clientId) => navigate(`/dashboard/clients/${encodeURIComponent(clientId)}`);
+  if (data._fullLoaded === false) return <section className="page"><Empty>{t("loading")}</Empty></section>;
   return (
     <section className="page">
       <Toolbar className="clients-toolbar">
@@ -2925,6 +3073,7 @@ function ClientOrdersPage({ data, clientId, navigate, filters, setFilters, lang,
   const client = (data.clients || []).find((item) => item.id === clientId);
   const technicianById = useMemo(() => new Map((data.technicians || []).map((technician) => [technician.id, technician])), [data.technicians]);
   const technicianByName = useMemo(() => technicianNameLookup(data.technicians || []), [data.technicians]);
+  if (data._fullLoaded === false) return <section className="page"><Empty>{t("loading")}</Empty></section>;
   const startDate = filters.clientOrdersStartDate || "";
   const endDate = filters.clientOrdersEndDate || "";
   const orders = (data.repairs || [])
@@ -3106,6 +3255,7 @@ function CategoriesPage({ data, saveData, saveNonRepairResource, filters, setFil
                         <Button size="sm" variant="outline" onClick={() => saveCatalog((value) => ({ ...value, models: moveSortedRow(value.models || [], model.id, 1, (row) => row.brandId === current.id) }))}><ChevronDown {...ICON_SM} /></Button>{" "}
                         <Button size="sm" variant="outline" onClick={() => setModal({ type: "model", id: model.id, brandId: current.id })}><Pencil {...ICON_SM} /> {t("edit")}</Button>{" "}
                         <Button size="sm" variant="danger" onClick={() => {
+                          if (data._fullLoaded === false) return toast(t("loading"));
                           if (data.repairs.some((repair) => (repair.brand || "").toLowerCase() === current.name.toLowerCase() && repair.model === model.name)) return toast(t("cannotDeleteModel"));
                           if (!confirm(t("confirmDeleteModel"))) return;
                           saveCatalog((value) => ({ ...value, models: value.models.filter((item) => item.id !== model.id) }));
@@ -3354,11 +3504,13 @@ function StaffPage({ data, saveData, deleteStaffRecord, filters, setFilters, set
 
 function TechniciansPage({ data, saveData, saveNonRepairResource, filters, setFilters, setModal, toast, navigate, lang, t }) {
   const isMobileLayout = useMobileLayout();
+  if (data._fullLoaded === false) return <section className="page"><Empty>{t("loading")}</Empty></section>;
   const allRows = technicianDashboardRows(data, t);
   const rows = allRows.filter((row) => row.name.toLowerCase().includes(filters.techniciansSearch.toLowerCase()));
   const page = paginate(rows, filters.techniciansPage);
   const saveTechnicians = (updater) => saveNonRepairResource ? saveNonRepairResource("technicians", updater) : saveData(updater);
   const remove = (technician) => {
+    if (data._fullLoaded === false) return toast(t("loading"));
     const isUsed = data.repairs.some((repair) => repair.technicianId === technician.id || (technician.name && repair.technicianName === technician.name));
     if (isUsed) return toast(t("cannotDeleteTechnician"));
     if (!confirm(t("confirmDeleteTechnician"))) return;
@@ -3426,6 +3578,7 @@ function TechniciansPage({ data, saveData, saveNonRepairResource, filters, setFi
 
 function TechnicianOrdersPage({ data, technicianKey, navigate, filters, setFilters, lang, t }) {
   const isMobileLayout = useMobileLayout();
+  if (data._fullLoaded === false) return <section className="page"><Empty>{t("loading")}</Empty></section>;
   const decodedKey = technicianKey || "";
   const technicians = data.technicians || [];
   const technicianById = new Map(technicians.map((technician) => [technician.id, technician]));
@@ -3555,6 +3708,7 @@ function ReportsPage({ data, filters, setFilters, navigate, lang, t }) {
   const range = reportRange(filters.reportPreset, filters.reportStart, filters.reportEnd);
   const technicianById = useMemo(() => new Map((data.technicians || []).map((technician) => [technician.id, technician])), [data.technicians]);
   const technicianByName = useMemo(() => technicianNameLookup(data.technicians || []), [data.technicians]);
+  if (data._fullLoaded === false) return <section className="page"><Empty>{t("loading")}</Empty></section>;
   const orders = data.repairs.filter((repair) => {
     if (isCanceledRepair(repair)) return false;
     const day = String(repair.repairTime || "").slice(0, 10);
@@ -3820,6 +3974,7 @@ function FinancePage({ data, filters, setFilters, navigate, lang, t }) {
     setFilters(next);
   };
   const clearDateRange = () => setFilters({ ...filters, financePreset: "custom", financeStart: "", financeEnd: "", financePaymentsPage: 1, financeUnpaidPage: 1 });
+  if (data._fullLoaded === false) return <section className="page"><Empty>{t("loading")}</Empty></section>;
   return (
     <section className="page finance-page">
       <Card className="daily-business-card">
@@ -4410,7 +4565,38 @@ function AttributeSelectionPanel({ value, onChange, items = [], lang = "zh", t }
 function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRecord, navigate, repairDraft, setRepairDraft, catalogTab, setCatalogTab, registerUnsavedGuard, registerRepairTopbar, repairId, route = "", toast, lang, t }) {
   const detailPath = route.split("?")[0] || "";
   const isWarrantyRoute = detailPath.startsWith("/dashboard/warranties");
-  const existing = repairId ? data.repairs.find((repair) => repair.id === repairId) : null;
+  const existingFromData = repairId ? data.repairs.find((repair) => repair.id === repairId) : null;
+  const [remoteRepair, setRemoteRepair] = useState(null);
+  const [remoteRepairLoading, setRemoteRepairLoading] = useState(false);
+  const [remoteRepairMissing, setRemoteRepairMissing] = useState(false);
+  useEffect(() => {
+    if (!repairId || existingFromData) {
+      setRemoteRepair(null);
+      setRemoteRepairLoading(false);
+      setRemoteRepairMissing(false);
+      return undefined;
+    }
+    let active = true;
+    setRemoteRepair(null);
+    setRemoteRepairMissing(false);
+    setRemoteRepairLoading(true);
+    apiGet(`/api/repairs/${encodeURIComponent(repairId)}`)
+      .then((res) => {
+        if (!active) return;
+        setRemoteRepair(res.repair ? normalizeRepairDraftFromRecord(res.repair) : null);
+        setRemoteRepairMissing(!res.repair);
+      })
+      .catch(() => {
+        if (!active) return;
+        setRemoteRepair(null);
+        setRemoteRepairMissing(true);
+      })
+      .finally(() => {
+        if (active) setRemoteRepairLoading(false);
+      });
+    return () => { active = false; };
+  }, [repairId, existingFromData?.id]);
+  const existing = remoteRepair?.id === repairId ? remoteRepair : existingFromData;
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [signatureOpen, setSignatureOpen] = useState(false);
   const [paymentConfirm, setPaymentConfirm] = useState("");
@@ -4429,10 +4615,12 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   useEffect(() => {
     const targetDraftId = existing?.id || "new";
     if (repairId && !existing && repairDraft?.id === repairId) return;
-    if (repairDraft?.id === targetDraftId) return;
+    const existingHydrated = existing?.itemsLoaded !== false;
+    const draftHydrated = repairDraft?.itemsLoaded !== false;
+    if (repairDraft?.id === targetDraftId && (!existingHydrated || draftHydrated)) return;
     setQrDataUrl("");
     setRepairDraft(fallbackDraft);
-  }, [repairId, existing?.id, repairDraft?.id, fallbackDraft]);
+  }, [repairId, existing?.id, existing?.itemsLoaded, repairDraft?.id, repairDraft?.itemsLoaded, fallbackDraft]);
 
   const draft = normalizeRepairDraft(repairDraft || fallbackDraft);
   const isWarrantyDraft = isWarrantyRoute || (draft.orderType || "repair") === "warranty";
@@ -4458,15 +4646,23 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
     let cancelled = false;
     const currentDraft = draftRef.current;
     if (!repairId || !existing || existing.itemsLoaded || (currentDraft?.id === repairId && currentDraft.itemsLoaded)) return undefined;
-    apiGet(`/api/repairs/${repairId}`)
+    setRemoteRepairLoading(true);
+    setRemoteRepairMissing(false);
+    apiGet(`/api/repairs/${encodeURIComponent(repairId)}`)
       .then((payload) => {
         if (cancelled || !payload?.repair) return;
         const fullDraft = normalizeRepairDraftFromRecord(payload.repair);
+        setRemoteRepair(fullDraft);
         initialSnapshotRef.current = comparableRepairDraft(fullDraft);
         draftRef.current = fullDraft;
         setRepairDraft(fullDraft);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setRemoteRepairMissing(true);
+      })
+      .finally(() => {
+        if (!cancelled) setRemoteRepairLoading(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -4679,6 +4875,9 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
     const explicitDraft = draftOverride && typeof draftOverride === "object" && !("nativeEvent" in draftOverride) && !("currentTarget" in draftOverride) ? draftOverride : null;
     const workingDraft = normalizeRepairDraft(explicitDraft || draftRef.current || draft);
     const { clientId, clientToCreate } = resolveRepairClientForSave(workingDraft, data.clients);
+    if (data._fullLoaded === false && clientToCreate) {
+      return toast(t("loading"));
+    }
     if (repairRequiredFieldsMissing(workingDraft, data.clients)) {
       return toast(t("requiredRepairFields"));
     }
@@ -4758,7 +4957,13 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const showPhotoSection = data.settings?.showPhotoSection !== false;
   const showSignatureSection = data.settings?.showSignatureSection !== false;
   const showQrNoticeSection = data.settings?.showQrNoticeSection !== false;
-  if (repairId && !existing) {
+  if (repairId && existing?.itemsLoaded === false && draft.itemsLoaded === false && !remoteRepairMissing) {
+    return <section className="page"><Empty>{t("loading")}</Empty></section>;
+  }
+  if (repairId && (!existing || (existing.itemsLoaded === false && remoteRepairMissing))) {
+    if (remoteRepairLoading || (data._fullLoaded === false && !remoteRepairMissing)) {
+      return <section className="page"><Empty>{t("loading")}</Empty></section>;
+    }
     return <section className="page"><Empty>{t("repairNotFound")}</Empty><Button onClick={() => navigate("/dashboard/repairs", { force: true })}>{t("repairs")}</Button></section>;
   }
   const deleteRepair = async () => {
@@ -6241,10 +6446,6 @@ function clientLevelClass(level) {
   return `level-${normalizeClientLevel(level).replaceAll(" ", "-")}`;
 }
 
-function normalizeClientLevel(level) {
-  return clientLevels.includes(level) ? level : DEFAULT_CLIENT_LEVEL;
-}
-
 function attributeGroupLabel(groupName, t) {
   if (groupName === "颜色") return t("groupColor");
   if (groupName === "其他") return t("groupOther");
@@ -6633,17 +6834,8 @@ function nextSortOrder(rows = []) {
   return rows.reduce((max, row, index) => Math.max(max, Number(row.sortOrder ?? index)), -1) + 1;
 }
 
-function withSortOrders(rows = []) {
-  return rows.map((row, index) => ({ ...row, sortOrder: Number(row.sortOrder ?? index) }));
-}
-
 function sortCatalogRows(rows = []) {
   return withSortOrders(rows).sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0) || String(a.name || a.defaultName || "").localeCompare(String(b.name || b.defaultName || "")));
-}
-
-function normalizeTechnicianColor(color) {
-  const value = String(color || "").trim();
-  return /^#[0-9a-f]{6}$/i.test(value) ? value : technicianColorOptions[0];
 }
 
 function moveSortedRow(rows = [], idValue, direction, scopeFn = null) {
@@ -6851,103 +7043,77 @@ function mergeNonRepairSaveResult(baseData, saved = {}) {
   return normalizeData(next);
 }
 
-function normalizeData(data) {
-  const clients = expandCompactRows(data.clientsCompact) || data.clients || [];
-  const repairs = expandCompactRows(data.repairsCompact) || data.repairs || [];
-  const users = (data.users || []).map((user) => ({ ...user, pagePermissions: user.isAdmin ? PAGE_PERMISSION_KEYS : normalizedPagePermissions(user) }));
+function mergeFullBootstrap(current, full, startRevision = "") {
+  const revisionChanged = startRevision && (current._revision || "") !== startRevision;
+  if (revisionChanged) {
+    return { ...current, _fullLoaded: false };
+  }
+  const repairMap = new Map((full.repairs || []).map((repair) => [repair.id, repair]));
+  const clientMap = new Map((full.clients || []).map((client) => [client.id, client]));
+
+  for (const repair of current.repairs || []) {
+    const existing = repairMap.get(repair.id);
+    if (!existing) {
+      repairMap.set(repair.id, repair);
+      continue;
+    }
+    const currentTs = Date.parse(repair.updatedAt || repair.createdAt || "") || 0;
+    const fullTs = Date.parse(existing.updatedAt || existing.createdAt || "") || 0;
+    if (currentTs > fullTs) repairMap.set(repair.id, repair);
+  }
+
+  for (const client of current.clients || []) {
+    const existing = clientMap.get(client.id);
+    if (!existing) {
+      clientMap.set(client.id, client);
+      continue;
+    }
+    const currentTs = Date.parse(client.updatedAt || client.createdAt || "") || 0;
+    const fullTs = Date.parse(existing.updatedAt || existing.createdAt || "") || 0;
+    if (currentTs > fullTs) clientMap.set(client.id, client);
+  }
+
   return {
-    _revision: data._revision || "",
-    _settingsUpdatedAt: data._settingsUpdatedAt || "",
-    users,
-    technicians: normalizeTechnicians(data.technicians || [], users),
-    clients: clients.map((client) => ({ ...client, level: normalizeClientLevel(client.level) })),
-    brands: withSortOrders(data.brands || []),
-    models: withSortOrders(data.models || []),
-    services: withSortOrders(data.services || []),
-    parts: withSortOrders(data.parts || []),
-    attributes: withSortOrders(data.attributes || []),
-    settings: {
-      uiLanguage: "zh",
-      printLanguage: "zh",
-      scanShortcut: "F2",
-      defaultWarrantyDays: 90,
-      defaultWarrantyMonths: 3,
-      enableOrderLock: true,
-      showPasswordSection: true,
-      showPhotoSection: true,
-      showSignatureSection: true,
-      showQrNoticeSection: true,
-      ...(data.settings || {})
-    },
-    repairs: repairs.map((repair) => normalizeRepairDraft({ ...repair, status: normalizeStatus(repair.status), items: repair.items || [] }))
+    ...current,
+    repairs: [...repairMap.values()],
+    clients: [...clientMap.values()],
+    _revision: full._revision || current._revision,
+    _fullLoaded: true
   };
 }
 
-function normalizeTechnicians(technicians = [], users = []) {
-  const rows = [];
-  const names = new Set();
-  const ids = new Set();
-  const add = (item) => {
-    const name = String(item?.name || "").trim();
-    if (!name) return;
-    const key = name.toLowerCase();
-    const idValue = String(item?.id || `tech_${key}`).trim();
-    if (names.has(key) || ids.has(idValue)) return;
-    rows.push({ id: idValue, name, phone: item.phone || "", email: item.email || "", color: normalizeTechnicianColor(item.color), active: item.active !== false, sortOrder: Number(item.sortOrder ?? rows.length) });
-    names.add(key);
-    ids.add(idValue);
-  };
-  technicians.forEach(add);
-  users.forEach((user) => {
-    const permissions = normalizedPagePermissions(user);
-    const canRepair = user.isAdmin || permissions.includes("repairs") || permissions.includes("technicians");
-    if (canRepair) add({ id: `staff_${user.id}`, name: user.name || user.username, email: user.email, active: true });
-  });
-  return rows;
-}
+function overlayOptimisticSnapshot(confirmedBefore, merged, dataCurrent) {
+  const confirmedRepairIds = new Set((confirmedBefore.repairs || []).map((repair) => repair.id));
+  const confirmedClientIds = new Set((confirmedBefore.clients || []).map((client) => client.id));
+  const repairMap = new Map((merged.repairs || []).map((repair) => [repair.id, repair]));
+  const clientMap = new Map((merged.clients || []).map((client) => [client.id, client]));
 
-function expandCompactRows(compact) {
-  if (!compact?.columns || !Array.isArray(compact.rows)) return null;
-  return compact.rows.map((row) => Object.fromEntries(compact.columns.map((column, index) => [column, row[index]])));
-}
+  for (const repair of dataCurrent.repairs || []) {
+    if (!confirmedRepairIds.has(repair.id)) {
+      repairMap.set(repair.id, repair);
+      continue;
+    }
+    const confirmedRepair = (confirmedBefore.repairs || []).find((item) => item.id === repair.id);
+    const currentTs = Date.parse(repair.updatedAt || repair.createdAt || "") || 0;
+    const confirmedTs = Date.parse(confirmedRepair?.updatedAt || confirmedRepair?.createdAt || "") || 0;
+    if (currentTs > confirmedTs) repairMap.set(repair.id, repair);
+  }
 
-function normalizeRepairDraft(repair) {
-  const items = Array.isArray(repair.items) ? repair.items.map(normalizeRepairItem) : [];
-  const payments = Array.isArray(repair.payments) ? repair.payments.map(normalizePaymentDraft) : [];
+  for (const client of dataCurrent.clients || []) {
+    if (!confirmedClientIds.has(client.id)) {
+      clientMap.set(client.id, client);
+      continue;
+    }
+    const confirmedClient = (confirmedBefore.clients || []).find((item) => item.id === client.id);
+    const currentTs = Date.parse(client.updatedAt || client.createdAt || "") || 0;
+    const confirmedTs = Date.parse(confirmedClient?.updatedAt || confirmedClient?.createdAt || "") || 0;
+    if (currentTs > confirmedTs) clientMap.set(client.id, client);
+  }
+
   return {
-    ...repair,
-    passwordType: repair.passwordType === "PIN" ? "" : repair.passwordType || "",
-    passwordText: repair.passwordText || "",
-    properties: repair.properties || "",
-    imei: repair.imei || "",
-    internalNote: repair.internalNote || "",
-    technicianId: repair.technicianId || "",
-    technicianName: repair.technicianName || "",
-    budget: nonNegativeMoney(repair.budget),
-    deposit: nonNegativeMoney(repair.deposit),
-    discountAmount: nonNegativeMoney(repair.discountAmount),
-    costAmount: nonNegativeMoney(repair.costAmount),
-    frontPhoto: repair.frontPhoto || "",
-    backPhoto: repair.backPhoto || "",
-    signatureDataUrl: repair.signatureDataUrl || "",
-    signedAt: repair.signedAt || "",
-    publicToken: repair.publicToken || id(),
-    orderType: repair.orderType || "repair",
-    sourceRepairId: repair.sourceRepairId || "",
-    warrantyReason: repair.warrantyReason || "",
-    warrantyDiagnosis: repair.warrantyDiagnosis || "",
-    warrantyResolution: repair.warrantyResolution || "",
-    warrantyChargeable: Boolean(repair.warrantyChargeable),
-    paymentMethod: repair.paymentMethod || "none",
-    itemsTotal: nonNegativeMoney(repair.itemsTotal),
-    itemsCostTotal: nonNegativeMoney(repair.itemsCostTotal),
-    itemsCount: repair.itemsCount ?? items.length,
-    itemsSummary: repair.itemsSummary || "",
-    itemsLoaded: repair.itemsLoaded !== false,
-    statusHistory: Array.isArray(repair.statusHistory) ? repair.statusHistory : [],
-    notificationLog: Array.isArray(repair.notificationLog) ? repair.notificationLog : [],
-    payments,
-    items
+    ...merged,
+    repairs: [...repairMap.values()],
+    clients: [...clientMap.values()]
   };
 }
 
@@ -7000,50 +7166,6 @@ function applyRevisionPatch(revision, patch = {}) {
     parts[index] = String(segment);
   });
   return parts.join("|");
-}
-
-function normalizeRepairItem(item = {}) {
-  return {
-    ...item,
-    name: item.name || "",
-    qty: normalizeMoneyDraftValue(item.qty),
-    price: normalizeMoneyDraftValue(item.price),
-    cost: normalizeMoneyDraftValue(item.cost)
-  };
-}
-
-function normalizeMoneyDraftValue(value) {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (!trimmed) return "";
-    if (/^\d*[.,]?\d{0,2}$/.test(trimmed)) return trimmed;
-  }
-  return nonNegativeMoney(value);
-}
-
-function normalizeStatus(status) {
-  const map = {
-    reserva: "预定",
-    Reserva: "预定",
-    "预定已到货": "预定到货",
-    "Reserva recibida": "预定到货",
-    "Reserva llegado": "预定到货",
-    "待开始": "预定",
-    "En espera": "预定",
-    Reparando: "维修中",
-    Terminado: "完成",
-    Finalizado: "完成",
-    Entregado: "已取走",
-    Cerrado: "取消",
-    Cancelar: "取消",
-    "关闭": "取消",
-    "待检测": "预定",
-    "处理中": "维修中",
-    "等客户确认": "预定到货",
-    "已完成": "完成",
-    "拒保": "取消"
-  };
-  return map[status] || status || "预定";
 }
 
 async function apiGet(url) {
@@ -7106,28 +7228,12 @@ function backupKindLabel(kind, t) {
 }
 
 
-function normalizePaymentDraft(payment = {}) {
-  return {
-    ...payment,
-    id: payment.id || id(),
-    amount: parseMoneyInput(payment.amount),
-    method: payment.method || "ledger",
-    note: payment.note || "",
-    paidAt: payment.paidAt || payment.createdAt || formatDateTime(new Date()),
-    createdBy: payment.createdBy || ""
-  };
-}
-
 function paymentTotal(payments = []) {
   return payments.reduce((sum, payment) => sum + parseMoneyInput(payment.amount), 0);
 }
 
 function roundMoney(value) {
   return Math.round(parseMoneyInput(value) * 100) / 100;
-}
-
-function nonNegativeMoney(value) {
-  return Math.max(0, roundMoney(value));
 }
 
 function repairPaymentsForDisplay(repair, t = makeT("zh")) {

@@ -1,6 +1,7 @@
 const { createServer } = require("http");
 const { existsSync, readFileSync } = require("fs");
 const path = require("path");
+const compression = require("compression");
 const next = require("next");
 
 function loadDotEnv(root) {
@@ -36,10 +37,11 @@ const port = Number.parseInt(process.env.PORT || "3000", 10);
 const hostname = "0.0.0.0";
 const app = next({ dev: false, hostname, port });
 const handle = app.getRequestHandler();
+const compress = compression();
 
 app.prepare().then(() => {
   createServer((req, res) => {
-    handle(req, res);
+    compress(req, res, () => handle(req, res));
   }).listen(port, hostname, () => {
     console.log(`RepairNOTE ready on http://${hostname}:${port}`);
   });

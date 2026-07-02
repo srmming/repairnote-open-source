@@ -3,10 +3,12 @@ import { ensureDailyAutoBackup } from "@/lib/backup-store";
 import { getBootstrapData, syncFromClientData, syncNonRepairBusinessData } from "@/lib/data-store";
 import { validateBusinessDataShape } from "@/lib/data-validation";
 
-export async function GET() {
+export async function GET(request) {
   try {
     const staff = await requireAnyPageAccess();
-    const data = await getBootstrapData();
+    const scope = new URL(request.url).searchParams.get("scope");
+    const options = scope === "light" ? { includeRepairs: false, includeClients: false } : {};
+    const data = await getBootstrapData(options);
     return Response.json(compactBootstrap(staff.isAdmin ? data : { ...data, users: [{ ...staff }] }));
   } catch (error) {
     return authErrorResponse(error);
@@ -14,7 +16,7 @@ export async function GET() {
 }
 
 const clientColumns = ["id", "name", "docType", "identity", "email", "phone", "address", "comment", "level", "createdAt", "updatedAt"];
-const repairColumns = ["id", "ticket", "clientId", "brand", "model", "properties", "imei", "issue", "internalNote", "passwordType", "passwordText", "passwordPattern", "status", "repairTime", "warrantyStart", "technicianId", "technicianName", "budget", "deposit", "paymentMethod", "discountAmount", "costAmount", "frontPhoto", "backPhoto", "signatureDataUrl", "signedAt", "publicToken", "orderType", "sourceRepairId", "warrantyReason", "warrantyDiagnosis", "warrantyResolution", "warrantyChargeable", "statusHistory", "notificationLog", "createdAt", "updatedAt", "itemsTotal", "itemsCostTotal", "itemsCount", "itemsSummary", "itemsLoaded", "items", "payments"];
+const repairColumns = ["id", "ticket", "clientId", "brand", "model", "issue", "status", "repairTime", "warrantyStart", "technicianId", "technicianName", "budget", "deposit", "paymentMethod", "discountAmount", "costAmount", "publicToken", "orderType", "sourceRepairId", "warrantyReason", "warrantyDiagnosis", "warrantyResolution", "warrantyChargeable", "statusHistory", "createdAt", "updatedAt", "itemsTotal", "itemsCostTotal", "itemsCount", "itemsSummary", "itemsLoaded", "payments"];
 
 const bootstrapWriteSections = [
   { permission: "repairs", keys: ["repairs", "clients"] },

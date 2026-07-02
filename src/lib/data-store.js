@@ -61,14 +61,16 @@ async function orderLockSettings() {
 export async function getBootstrapData(options = {}) {
   const includeRepairItems = options.includeRepairItems === true;
   const includeRepairs = options.includeRepairs !== false;
+  const includeClients = options.includeClients !== false;
   const repairInclude = includeRepairItems
     ? { items: true, payments: { orderBy: { paidAt: "desc" } } }
     : { payments: { orderBy: { paidAt: "desc" } } };
   const repairQuery = includeRepairs ? prisma.repair.findMany({ include: repairInclude, orderBy: { createdAt: "desc" } }) : Promise.resolve([]);
+  const clientQuery = includeClients ? prisma.client.findMany({ orderBy: { createdAt: "desc" } }) : Promise.resolve([]);
   const [staff, technicians, clients, brands, models, services, parts, groups, repairs, itemTotals, settings] = await Promise.all([
     prisma.staff.findMany({ orderBy: { createdAt: "asc" } }),
     prisma.technician.findMany({ orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
-    prisma.client.findMany({ orderBy: { createdAt: "desc" } }),
+    clientQuery,
     prisma.brand.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
     prisma.model.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
     prisma.service.findMany({ orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
@@ -97,7 +99,7 @@ export async function getBootstrapData(options = {}) {
 }
 
 export async function getRepairById(id) {
-  const repair = await prisma.repair.findUnique({ where: { id }, include: { items: true, payments: { orderBy: { paidAt: "desc" } } } });
+  const repair = await prisma.repair.findUnique({ where: { id }, include: { client: true, items: true, payments: { orderBy: { paidAt: "desc" } } } });
   return repair ? serializeRepair(repair, null, true) : null;
 }
 
@@ -132,7 +134,10 @@ export async function searchRepairs(params = {}) {
       orderBy: [{ ticketSort: "desc" }, { repairTime: "desc" }, { createdAt: "desc" }],
       skip: (page - 1) * pageSize,
       take: pageSize,
-      include: { payments: { orderBy: { paidAt: "desc" } } }
+      include: {
+        client: { select: { name: true, phone: true } },
+        payments: { orderBy: { paidAt: "desc" } }
+      }
     })
   ]);
 
@@ -271,6 +276,15 @@ function serializeRepair(repair, totals = null, includeItems = false) {
     itemsCount: totals ? Number(totals.itemsCount || 0) : itemRows.length,
     itemsSummary: totals ? totals.itemsSummary || "" : itemRows.map((item) => item.name).filter(Boolean).join("，"),
     itemsLoaded: includeItems,
+    statusHistory: Array.isArray(repair.statusHistory) ? repair.statusHistory : [],
+    clientName: repair.client?.name || "",
+    clientPhone: repair.client?.phone || "",
+    clientLevel: repair.client?.level || "",
+    docType: repair.client?.docType || "",
+    identity: repair.client?.identity || "",
+    email: repair.client?.email || "",
+    phone: repair.client?.phone || "",
+    address: repair.client?.address || "",
     payments: Array.isArray(repair.payments) ? repair.payments.map(serializePayment) : [],
     items: includeItems
       ? itemRows.map((item) => ({ id: item.id, name: item.name, qty: moneyNumber(item.qty), price: moneyNumber(item.price), cost: moneyNumber(item.cost) }))
@@ -278,7 +292,7 @@ function serializeRepair(repair, totals = null, includeItems = false) {
   };
   if (!includeItems) return shared;
   // ticketSort 是 BigInt（无法 JSON 序列化），searchText 是内部检索字段（最长 8000 字），都不应回传/写入备份。
-  const { ticketSort, searchText, ...repairRest } = repair;
+  const { ticketSort, searchText, client: _client, ...repairRest } = repair;
   return {
     ...repairRest,
     ...shared,
@@ -292,7 +306,6 @@ function serializeRepair(repair, totals = null, includeItems = false) {
     backPhoto: repair.backPhoto || "",
     signatureDataUrl: repair.signatureDataUrl || "",
     signedAt: repair.signedAt || "",
-    statusHistory: Array.isArray(repair.statusHistory) ? repair.statusHistory : [],
     notificationLog: Array.isArray(repair.notificationLog) ? repair.notificationLog : []
   };
 }
@@ -309,6 +322,39 @@ function serializePayment(payment) {
     createdAt: payment.createdAt,
     updatedAt: payment.updatedAt
   };
+}
+
+function mergeJsonRows(existing = [], incoming = []) {
+  const rows = Array.isArray(existing) ? [...existing] : [];
+  const seen = new Set(rows.map((row) => JSON.stringify(row)));
+  for (const row of Array.isArray(incoming) ? incoming : []) {
+    const key = JSON.stringify(row);
+    if (!seen.has(key)) rows.push(row);
+  }
+  return rows;
+}
+
+const COMPACT_REPAIR_PRESERVED_FIELDS = [
+  "properties",
+  "imei",
+  "internalNote",
+  "passwordType",
+  "passwordText",
+  "passwordPattern",
+  "frontPhoto",
+  "backPhoto",
+  "signatureDataUrl",
+  "signedAt",
+  "notificationLog"
+];
+
+function mergeCompactRepairForReplace(preservedRepair, repair) {
+  const merged = { ...preservedRepair, ...repair };
+  COMPACT_REPAIR_PRESERVED_FIELDS.forEach((key) => {
+    merged[key] = preservedRepair[key];
+  });
+  merged.statusHistory = Array.isArray(repair.statusHistory) ? repair.statusHistory : (preservedRepair.statusHistory || []);
+  return merged;
 }
 
 export async function saveRepairRecord({ repair, client, actor } = {}) {
@@ -335,6 +381,13 @@ export async function saveRepairRecord({ repair, client, actor } = {}) {
     }
     const existingRepair = existing ? serializeRepair(existing, null, true) : null;
     const repairData = { ...(existingRepair || {}), ...repair, clientId: repair.clientId || savedClient?.id || existingRepair?.clientId || "" };
+    if (existingRepair && repair.itemsLoaded === false) {
+      COMPACT_REPAIR_PRESERVED_FIELDS.forEach((key) => {
+        repairData[key] = existingRepair[key];
+      });
+      repairData.statusHistory = mergeJsonRows(existingRepair.statusHistory, repair.statusHistory);
+      repairData.notificationLog = mergeJsonRows(existingRepair.notificationLog, repair.notificationLog);
+    }
     if (!repairData.clientId) throwBadRequest("维修单缺少客户");
     const repairItems = repair.itemsLoaded === false && existing ? existing.items : (Array.isArray(repair.items) ? repair.items : []);
     const paymentCreates = repairPaymentsForSave(repairData, existing?.payments || []);
@@ -347,9 +400,10 @@ export async function saveRepairRecord({ repair, client, actor } = {}) {
     const searchText = buildRepairSearchText(repairData, { client: searchClient || {}, items: repairItems, sourceTicket });
     const dbData = { ...repairPrismaData(repairData), deposit: paymentCreates.length ? depositPaymentTotal(paymentCreates) : dbMoney(repairData.deposit), searchText, ticketSort: BigInt(ticketSortValue(repairTicket(repairData))) };
     const itemCreates = repairItems.map(repairItemPrismaData);
+    const repairInclude = { client: true, items: true, payments: { orderBy: { paidAt: "desc" } } };
     const savedRepair = existing
-      ? await tx.repair.update({ where: { id: repair.id }, data: { ...dbData, items: { deleteMany: {}, create: itemCreates }, payments: { deleteMany: {}, create: paymentCreates.map(paymentPrismaData) } }, include: { items: true, payments: { orderBy: { paidAt: "desc" } } } })
-      : await tx.repair.create({ data: { id: repair.id, ...dbData, items: { create: itemCreates }, payments: { create: paymentCreates.map(paymentPrismaData) } }, include: { items: true, payments: { orderBy: { paidAt: "desc" } } } });
+      ? await tx.repair.update({ where: { id: repair.id }, data: { ...dbData, items: { deleteMany: {}, create: itemCreates }, payments: { deleteMany: {}, create: paymentCreates.map(paymentPrismaData) } }, include: repairInclude })
+      : await tx.repair.create({ data: { id: repair.id, ...dbData, items: { create: itemCreates }, payments: { create: paymentCreates.map(paymentPrismaData) } }, include: repairInclude });
     return { repair: savedRepair, client: savedClient };
   });
   return {
@@ -690,7 +744,8 @@ export async function replaceBusinessData(data, options = {}) {
       });
     }
     for (const [index, repair] of (data.repairs || []).entries()) {
-      const repairData = repair.itemsLoaded === false && preservedRepairById.has(repair.id) ? { ...preservedRepairById.get(repair.id), ...repair } : repair;
+      const preservedRepair = repair.itemsLoaded === false ? preservedRepairById.get(repair.id) : null;
+      const repairData = preservedRepair ? mergeCompactRepairForReplace(preservedRepair, repair) : repair;
       const repairItems = repair.itemsLoaded === false ? (preservedItemsByRepair.get(repair.id) || []) : (repair.items || []);
       const repairPayments = repairPaymentsForImport(repairData);
       await tx.repair.create({
