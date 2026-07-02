@@ -113,12 +113,18 @@ export async function searchRepairs(params = {}) {
   const orderType = String(params.orderType || "").trim();
   const start = String(params.start || "").trim();
   const end = String(params.end || "").trim();
+  const clientId = String(params.clientId || "").trim();
+  const sourceRepairId = String(params.sourceRepairId || "").trim();
+  const technicianKey = String(params.technicianKey || "").trim();
   const page = Math.max(1, Number(params.page) || 1);
   const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || SEARCH_PAGE_SIZE));
 
   const baseFilters = [];
   if (q) baseFilters.push({ searchText: { contains: q } });
   if (orderType) baseFilters.push({ orderType });
+  if (clientId) baseFilters.push({ clientId });
+  if (sourceRepairId) baseFilters.push({ sourceRepairId });
+  if (technicianKey) baseFilters.push(await technicianKeyFilter(technicianKey));
   if (start) baseFilters.push({ repairTime: { gte: start } });
   // repairTime 形如 "YYYY-MM-DD HH:mm"；"~"(0x7E) 大于空格与数字，故 <= end+"~" 含 end 当天全部时间且不含次日。
   if (end) baseFilters.push({ repairTime: { lte: `${end}~` } });
@@ -175,6 +181,28 @@ export async function searchRepairs(params = {}) {
     counts,
     summary
   };
+}
+
+// 技师筛选口径与前端 repairMatchesTechnicianKey 完全一致：
+// - "unassigned"：technicianId 不是在册技师，且 technicianName 为空
+// - "id:<技师id>"：technicianId 精确匹配，或（technicianId 不在册且 technicianName 等于该技师姓名，兼容历史单）
+// - "name:<历史姓名>"：technicianId 不在册且 technicianName 等于该姓名（MySQL 排序规则天然忽略大小写）
+async function technicianKeyFilter(technicianKey) {
+  const technicians = await prisma.technician.findMany({ select: { id: true, name: true } });
+  const knownIds = technicians.map((technician) => technician.id);
+  const notKnownTechnician = knownIds.length ? { OR: [{ technicianId: "" }, { technicianId: { notIn: knownIds } }] } : {};
+  if (technicianKey === "unassigned") return { AND: [notKnownTechnician, { technicianName: "" }] };
+  if (technicianKey.startsWith("id:")) {
+    const technicianId = technicianKey.slice(3);
+    const technician = technicians.find((row) => row.id === technicianId);
+    const legacyMatch = technician?.name ? [{ AND: [notKnownTechnician, { technicianName: technician.name }] }] : [];
+    return { OR: [{ technicianId }, ...legacyMatch] };
+  }
+  if (technicianKey.startsWith("name:")) {
+    return { AND: [notKnownTechnician, { technicianName: technicianKey.slice(5) }] };
+  }
+  // 未知格式：不产生任何命中，避免误返回全表
+  return { id: "" };
 }
 
 // 列表页的「合计金额 / 技师汇总」：基于与 searchRepairs 相同的筛选集（含 imei/properties/证件号），

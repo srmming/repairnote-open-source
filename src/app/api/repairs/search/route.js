@@ -12,6 +12,9 @@ export async function GET(request) {
       orderType: params.get("orderType") || "",
       start: params.get("start") || "",
       end: params.get("end") || "",
+      clientId: params.get("clientId") || "",
+      sourceRepairId: params.get("sourceRepairId") || "",
+      technicianKey: params.get("technicianKey") || "",
       page: params.get("page") || "1",
       pageSize: params.get("pageSize") || ""
     });
