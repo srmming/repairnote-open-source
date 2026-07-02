@@ -2093,7 +2093,8 @@ function TopbarActions({ route, data, saveData, saveRepairRecord, deleteRepairRe
     || (path.startsWith("/dashboard/warranties/") && path !== "/dashboard/warranties/new")
   ) {
     const repairId = path.split("/").pop();
-    const existing = data.repairs.find((repair) => repair.id === repairId) || (repairDraft?.id === repairId ? repairDraft : null);
+    // 详情数据由 RepairForm 从服务端加载进 repairDraft，这里不再查内存全量。
+    const existing = repairDraft?.id === repairId ? repairDraft : null;
     if (!existing) return null;
     const draft = normalizeRepairDraft(repairDraft?.id === existing.id ? repairDraft : existing);
     const selectedClient = clientById(data, draft.clientId);
@@ -2102,7 +2103,6 @@ function TopbarActions({ route, data, saveData, saveRepairRecord, deleteRepairRe
     const total = chargeAmount(draft);
     const due = Math.max(0, total - repairPaidAmount(draft));
     const publicUrl = draft.publicToken ? buildPublicStatusUrl(data.settings, draft.publicToken) : "";
-    const linkedWarrantyOrders = isWarranty ? [] : data.repairs.filter((repair) => repair.orderType === "warranty" && repair.sourceRepairId === existing.id);
     const orderLocked = isOrderLocked(draft, data.settings);
     const warrantyPrint = shouldPrintWarrantyDocument(draft);
     const createNewOrder = () => {
@@ -2148,7 +2148,7 @@ function TopbarActions({ route, data, saveData, saveRepairRecord, deleteRepairRe
     };
     const deleteRepair = async () => {
       if (orderLocked) return toast(t("orderLocked"));
-      if (linkedWarrantyOrders.length) return toast(t("cannotDeleteRepairWithWarranty"));
+      // 「已有保修单不能删除」由服务端 DELETE /api/repairs/[id] 校验并返回错误提示。
       if (!confirm(isWarranty ? t("confirmDeleteWarranty") : t("confirmDeleteRepair"))) return;
       const ok = await deleteRepairRecord(existing.id);
       if (!ok) return;
@@ -4553,7 +4553,7 @@ function AttributeSelectionPanel({ value, onChange, items = [], lang = "zh", t }
 function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRecord, navigate, repairDraft, setRepairDraft, catalogTab, setCatalogTab, registerUnsavedGuard, registerRepairTopbar, repairId, route = "", toast, lang, t }) {
   const detailPath = route.split("?")[0] || "";
   const isWarrantyRoute = detailPath.startsWith("/dashboard/warranties");
-  const existingFromData = repairId ? data.repairs.find((repair) => repair.id === repairId) : null;
+  const existingFromData = null; // 详情一律按 id 从服务端读取，不再依赖内存全量
   const [remoteRepair, setRemoteRepair] = useState(null);
   const [remoteRepairLoading, setRemoteRepairLoading] = useState(false);
   const [remoteRepairMissing, setRemoteRepairMissing] = useState(false);
@@ -4752,21 +4752,38 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const clientNameSearchValue = draft.clientName || selectedClient.name || "";
   const activeClientSearchValue = clientDropdownOpen === "name" ? clientNameSearchValue : clientPhoneSearchValue;
   const normalizedClientSearch = activeClientSearchValue.trim().toLowerCase();
-  const clientRepairCounts = useMemo(() => {
-    return data.repairs.reduce((counts, repair) => {
-      if (repair.clientId) counts[repair.clientId] = (counts[repair.clientId] || 0) + 1;
-      return counts;
-    }, {});
-  }, [data.repairs]);
-  const clientMatches = (normalizedClientSearch
-    ? data.clients.filter((client) => [client.phone, client.name, client.identity, client.email].join(" ").toLowerCase().includes(normalizedClientSearch))
-    : data.clients
-  ).slice(0, 8);
-  const selectedClientRepairs = selectedClient.id
-    ? data.repairs
-      .filter((repair) => repair.clientId === selectedClient.id && repair.id !== draft.id)
-      .sort((a, b) => String(b.repairTime || b.ticket || "").localeCompare(String(a.repairTime || a.ticket || "")))
-    : [];
+  // 客户搜索下拉与单数徽标改服务端（/api/clients/search 返回 stats.total）。
+  const [clientSearchResult, setClientSearchResult] = useState({ rows: [] });
+  useEffect(() => {
+    if (!clientDropdownOpen) return undefined;
+    let active = true;
+    const handle = setTimeout(() => {
+      const params = new URLSearchParams({ q: normalizedClientSearch, pageSize: "8", sort: "latest" });
+      apiGet(`/api/clients/search?${params.toString()}`)
+        .then((res) => { if (active) setClientSearchResult({ rows: res.rows || [] }); })
+        .catch(() => { if (active) setClientSearchResult({ rows: [] }); });
+    }, 200);
+    return () => { active = false; clearTimeout(handle); };
+  }, [clientDropdownOpen, normalizedClientSearch]);
+  const clientMatches = clientSearchResult.rows;
+  const clientRepairCounts = Object.fromEntries(clientMatches.map((client) => [client.id, client.stats?.total || 0]));
+  // 已选客户的历史单数（编辑已有单时扣掉当前这张，与旧口径一致）。
+  const [selectedClientRepairCount, setSelectedClientRepairCount] = useState(0);
+  useEffect(() => {
+    if (!selectedClient.id) {
+      setSelectedClientRepairCount(0);
+      return undefined;
+    }
+    let active = true;
+    apiGet(`/api/repairs/search?clientId=${encodeURIComponent(selectedClient.id)}&pageSize=1`)
+      .then((res) => {
+        if (!active) return;
+        const minusCurrent = existing && existing.clientId === selectedClient.id ? 1 : 0;
+        setSelectedClientRepairCount(Math.max(0, (res.total || 0) - minusCurrent));
+      })
+      .catch(() => { if (active) setSelectedClientRepairCount(0); });
+    return () => { active = false; };
+  }, [selectedClient.id, existing?.id, existing?.clientId, data._revision]);
   const filteredModels = sortCatalogRows(data.models).filter((model) => {
     const brand = data.brands.find((item) => item.id === model.brandId);
     return !draft.brand || brand?.name.toLowerCase() === draft.brand.toLowerCase();
@@ -4775,7 +4792,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
     const previous = previousDraft || draft;
     const next = { ...previous, [key]: value };
     if (key === "clientSearch") {
-      const client = data.clients.find((item) => item.name.toLowerCase() === value.toLowerCase());
+      const client = clientMatches.find((item) => item.name.toLowerCase() === value.toLowerCase());
       if (client) return { ...next, clientId: client.id, clientName: client.name, clientLevel: normalizeClientLevel(client.level), docType: client.docType || "DNI", identity: client.identity, email: client.email, phone: client.phone, address: client.address };
       return { ...next, clientId: "", clientName: value };
     }
@@ -4913,8 +4930,20 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   });
   const chipItems = source.filter((item) => [item.defaultName, item.zh, item.es].join(" ").toLowerCase().includes((draft.catalogSearch || "").toLowerCase())).slice(0, 40);
   const selectedCatalogNames = new Set((draft.items || []).flatMap((item) => [item.name, localizeText(item.name, lang)]).filter(Boolean));
-  const sourceRepair = isWarrantyDraft && draft.sourceRepairId ? data.repairs.find((repair) => repair.id === draft.sourceRepairId) : null;
-  const linkedWarrantyOrders = existing && !isWarrantyDraft ? data.repairs.filter((repair) => repair.orderType === "warranty" && repair.sourceRepairId === existing.id) : [];
+  // 保修来源单按需从服务端读取（只用于展示来源单号）。
+  const [sourceRepair, setSourceRepair] = useState(null);
+  useEffect(() => {
+    const sourceId = isWarrantyDraft ? draft.sourceRepairId || "" : "";
+    if (!sourceId) {
+      setSourceRepair(null);
+      return undefined;
+    }
+    let active = true;
+    apiGet(`/api/repairs/${encodeURIComponent(sourceId)}`)
+      .then((res) => { if (active) setSourceRepair(res.repair || null); })
+      .catch(() => { if (active) setSourceRepair(null); });
+    return () => { active = false; };
+  }, [isWarrantyDraft, draft.sourceRepairId]);
   const showWarrantyDates = shouldShowWarrantyDates(draft);
   const statusOptions = isWarrantyDraft ? warrantyStatusOrder : statusOrder;
   const orderLocked = isOrderLocked(draft, data.settings);
@@ -4956,7 +4985,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   }
   const deleteRepair = async () => {
     if (!existing) return;
-    if (!isWarrantyDraft && linkedWarrantyOrders.length) return toast(t("cannotDeleteRepairWithWarranty"));
+    // 「已有保修单不能删除」由服务端 DELETE /api/repairs/[id] 校验并返回错误提示。
     if (!confirm(isWarrantyDraft ? t("confirmDeleteWarranty") : t("confirmDeleteRepair"))) return;
     const ok = await deleteRepairRecord(existing.id);
     if (!ok) return;
@@ -5392,10 +5421,10 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
               <div className="client-history-compact col-12">
                 <div className="client-history-head">
                   <b>{t("repairRecords")}</b>
-                  <span>{selectedClientRepairs.length ? `${selectedClientRepairs.length} ${t("times")}` : t("noRepairRecords")}</span>
+                  <span>{selectedClientRepairCount ? `${selectedClientRepairCount} ${t("times")}` : t("noRepairRecords")}</span>
                 </div>
-                <ActionSurface className="client-history-open" disabled={!selectedClientRepairs.length} onClick={() => navigate(`/dashboard/clients/${encodeURIComponent(selectedClient.id)}`)}>
-                  <span>{selectedClientRepairs.length ? `${selectedClientRepairs.length} ${t("times")}` : t("noRepairRecords")}</span>
+                <ActionSurface className="client-history-open" disabled={!selectedClientRepairCount} onClick={() => navigate(`/dashboard/clients/${encodeURIComponent(selectedClient.id)}`)}>
+                  <span>{selectedClientRepairCount ? `${selectedClientRepairCount} ${t("times")}` : t("noRepairRecords")}</span>
                   <b>{t("openOrder")}</b>
                 </ActionSurface>
               </div>

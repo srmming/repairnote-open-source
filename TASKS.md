@@ -66,9 +66,9 @@
 
 ## 阶段 4：表单内关联查询
 
-- [ ] **T4.1** RepairForm/TopbarActions 按 id 读单改 GET `/api/repairs/[id]`（直开链接、打印场景不再依赖全量）。验收：直接打开 `/dashboard/repairs/<id>` 正常显示与打印。
-- [ ] **T4.2** 保修来源单/关联保修单改 `/api/repairs/[id]` + `search?sourceRepairId=`。验收：保修单表单显示来源单信息、原始单显示关联保修单，与改前一致。
-- [ ] **T4.3** RepairForm 状态计数改用 search 返回的 counts（或去除依赖）。验收：表单页不再读取 `data.repairs`。
+- [x] **T4.1** RepairForm/TopbarActions 按 id 读单改 GET `/api/repairs/[id]`（直开链接、打印场景不再依赖全量）。验收：直接打开 `/dashboard/repairs/<id>` 正常显示与打印。
+- [x] **T4.2** 保修来源单/关联保修单改 `/api/repairs/[id]` + `search?sourceRepairId=`。验收：保修单表单显示来源单信息、原始单显示关联保修单，与改前一致。
+- [x] **T4.3** RepairForm 状态计数改用 search 返回的 counts（或去除依赖）。验收：表单页不再读取 `data.repairs`。
 
 **检查点 CP4**：`npm run build` + `npm run smoke`；commit。
 
