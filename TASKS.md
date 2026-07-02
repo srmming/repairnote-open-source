@@ -38,9 +38,9 @@
 
 ## 阶段 1：维修单列表 + 快速查单
 
-- [ ] **T1.1** RepairsPage 改服务器分页：列表数据、筛选（状态/类型/日期/关键词）、翻页、状态计数走 `/api/repairs/search`，金额/技师汇总条走 `/api/repairs/aggregates`；移除对 `data.repairs` 的依赖。验收：页面功能等价（筛选/翻页/计数/汇总一致），网络面板单次响应 ≤ pageSize 条。
-- [ ] **T1.2** 顶栏快速查单/扫码 + QuickFindPage 改走 `/api/repairs/search?q=`。验收：输入完整单号直达该单；模糊词返回列表。
-- [ ] **T1.3** 保存/删除后的本地合并改为"按页刷新"：`mergeRepairAndClient`/`removeRepairFromData` 在列表场景改为重新拉当前页。验收：新建/编辑/删除单后列表即时正确。
+- [x] **T1.1** RepairsPage 改服务器分页：列表数据、筛选（状态/类型/日期/关键词）、翻页、状态计数走 `/api/repairs/search`，金额/技师汇总条走 `/api/repairs/aggregates`；移除对 `data.repairs` 的依赖。验收：页面功能等价（筛选/翻页/计数/汇总一致），网络面板单次响应 ≤ pageSize 条。
+- [x] **T1.2** 顶栏快速查单/扫码 + QuickFindPage 改走 `/api/repairs/search?q=`。验收：输入完整单号直达该单；模糊词返回列表。
+- [x] **T1.3** 保存/删除后的本地合并改为"按页刷新"：`mergeRepairAndClient`/`removeRepairFromData` 在列表场景改为重新拉当前页。验收：新建/编辑/删除单后列表即时正确。
 
 **检查点 CP1**：`npm run build` + `npm run smoke` 通过；commit。
 

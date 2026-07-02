@@ -1524,17 +1524,19 @@ export default function AppPage() {
     return true;
   }
 
-  function openScanSearchTicket(rawValue) {
+  async function openScanSearchTicket(rawValue) {
     const value = String(rawValue || "").trim();
     if (!value) {
       setScanSearchMessage(t("noOrderFound"));
       return false;
     }
-    if (dataRef.current._fullLoaded === false) {
-      setScanSearchMessage(t("loading"));
-      return false;
+    let repair = null;
+    try {
+      const result = await apiGet(`/api/repairs/lookup?value=${encodeURIComponent(value)}`);
+      repair = result.repair || null;
+    } catch {
+      repair = null;
     }
-    const repair = findRepairByTicket(dataRef.current.repairs || [], value);
     if (!repair) {
       setScanSearchQuery(scannedTicketValue(value) || value);
       setScanSearchMessage(t("noOrderFound"));
@@ -1550,10 +1552,6 @@ export default function AppPage() {
   }
 
   function openGlobalScanDialog() {
-    if (dataRef.current._fullLoaded === false) {
-      showToast(t("loading"));
-      return;
-    }
     setScanSearchQuery("");
     setScanSearchMessage("");
     setScanSearchOpen(true);
@@ -2370,7 +2368,9 @@ function permissionLabel(key, t) {
 function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filters, setFilters, toast, lang, t }) {
   const isMobileLayout = useMobileLayout();
   const clientLookup = useMemo(() => new Map((data.clients || []).map((client) => [client.id, client])), [data.clients]);
-  const repairLookup = useMemo(() => new Map((data.repairs || []).map((repair) => [repair.id, repair])), [data.repairs]);
+  // 行内编辑（状态/技师/明细）后的本地覆盖层：保存成功先盖住当页旧行，等服务端刷新到位后整体清空。
+  // 不再依赖内存全量 data.repairs。
+  const [rowOverlay, setRowOverlay] = useState(() => new Map());
   const technicianById = useMemo(() => new Map((data.technicians || []).map((technician) => [technician.id, technician])), [data.technicians]);
   const technicianByName = useMemo(() => technicianNameLookup(data.technicians || []), [data.technicians]);
   const historicalAmount = (repair) => isHistoricalAmountRepair(repair, technicianById, technicianByName);
@@ -2416,7 +2416,11 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
     if (filters.repairsEndDate) params.set("end", filters.repairsEndDate);
     params.set("page", String(filters.repairsPage || 1));
     apiGet(`/api/repairs/search?${params.toString()}`)
-      .then((res) => { if (active) setServerData({ rows: res.rows || [], total: res.total || 0, counts: res.counts || {}, summary: res.summary || { repairs: 0, warranties: 0 }, loading: false }); })
+      .then((res) => {
+        if (!active) return;
+        setServerData({ rows: res.rows || [], total: res.total || 0, counts: res.counts || {}, summary: res.summary || { repairs: 0, warranties: 0 }, loading: false });
+        setRowOverlay((prev) => (prev.size ? new Map() : prev));
+      })
       .catch(() => { if (active) setServerData({ rows: [], total: 0, counts: {}, summary: { repairs: 0, warranties: 0 }, loading: false }); });
     return () => { active = false; };
   }, [committedSearch, filters.repairsStatus, orderTypeFilter, filters.repairsStartDate, filters.repairsEndDate, filters.repairsPage, data._revision]);
@@ -2478,16 +2482,19 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
     });
     navigate(`/dashboard/technicians/${encodeURIComponent(row.id)}`);
   };
-  const setStatus = async (id, status) => {
-    let target = repairLookup.get(id);
-    if (!target) {
-      try {
-        const result = await apiGet(`/api/repairs/${encodeURIComponent(id)}`);
-        target = result.repair ? normalizeRepairDraft(result.repair) : null;
-      } catch {
-        target = null;
-      }
+  // 行内编辑的目标行：本地覆盖层 > 当页服务端行；都没有（极端情况）再回源查一次。
+  const findRowRepair = async (id) => {
+    const local = rowOverlay.get(id) || serverData.rows.find((row) => row.id === id);
+    if (local) return normalizeRepairDraft(local);
+    try {
+      const result = await apiGet(`/api/repairs/${encodeURIComponent(id)}`);
+      return result.repair ? normalizeRepairDraft(result.repair) : null;
+    } catch {
+      return null;
     }
+  };
+  const setStatus = async (id, status) => {
+    const target = await findRowRepair(id);
     if (!target) {
       toast(t("repairNotFound"));
       return;
@@ -2497,18 +2504,13 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
     if (nextStatus === "取消" && normalizeStatus(target.status) !== "取消" && !window.confirm(t("cancelLockConfirm"))) return;
     const nextRepair = withStatusChange(target, nextStatus, getClient(target.clientId, target), data.settings);
     const ok = await saveRepairRecord(nextRepair);
-    if (ok) toast(t("statusUpdated"));
+    if (ok) {
+      setRowOverlay((prev) => new Map(prev).set(id, ok.repair || nextRepair));
+      toast(t("statusUpdated"));
+    }
   };
   const setTechnician = async (id, technicianValue) => {
-    let target = repairLookup.get(id);
-    if (!target) {
-      try {
-        const result = await apiGet(`/api/repairs/${encodeURIComponent(id)}`);
-        target = result.repair ? normalizeRepairDraft(result.repair) : null;
-      } catch {
-        target = null;
-      }
-    }
+    const target = await findRowRepair(id);
     if (!target) {
       toast(t("repairNotFound"));
       return;
@@ -2522,14 +2524,17 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
       technicianName: technician?.name || ""
     };
     const ok = await saveRepairRecord(nextRepair);
-    if (ok) toast(t("saved"));
+    if (ok) {
+      setRowOverlay((prev) => new Map(prev).set(id, ok.repair || nextRepair));
+      toast(t("saved"));
+    }
   };
   const openItemsDialog = async (event, repair) => {
     event.stopPropagation();
     if (!repair?.id) return;
     const requestId = itemsDialogRequestRef.current + 1;
     itemsDialogRequestRef.current = requestId;
-    const localRepair = normalizeRepairDraft(repairLookup.get(repair.id) || repair);
+    const localRepair = normalizeRepairDraft(rowOverlay.get(repair.id) || repair);
     setItemsDialog({ open: true, loading: localRepair.itemsLoaded === false, repair: localRepair });
     if (localRepair.itemsLoaded !== false) return;
     try {
@@ -2548,8 +2553,10 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
   };
   const saveItemsDialog = async () => {
     if (!itemsDialog.repair?.id) return;
-    const ok = await saveRepairRecord(normalizeRepairDraft(itemsDialog.repair));
+    const draft = normalizeRepairDraft(itemsDialog.repair);
+    const ok = await saveRepairRecord(draft);
     if (!ok) return;
+    setRowOverlay((prev) => new Map(prev).set(draft.id, ok.repair || draft));
     closeItemsDialog();
     toast(t("saved"));
   };
@@ -2603,7 +2610,7 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
           />
           <div className="mobile-order-card-list" data-smoke="mobile-order-cards">
             {page.items.length ? page.items.map((serverRow) => {
-              const repair = repairLookup.get(serverRow.id) || serverRow;
+              const repair = rowOverlay.get(serverRow.id) || serverRow;
               const client = getClient(repair.clientId, repair);
               const isWarranty = repair.orderType === "warranty";
               const amount = chargeAmount(repair);
@@ -2642,8 +2649,8 @@ function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filter
           <TableHeader><TableRow><TableHead>{t("ticket")}</TableHead><TableHead>{t("clientName")}</TableHead><TableHead>{t("phone")}</TableHead><TableHead>{t("brandModel")}</TableHead><TableHead>{t("issue")}</TableHead><TableHead>{t("assignedTechnician")}</TableHead><TableHead>{t("status")}</TableHead><TableHead>{t("orderDate")}</TableHead><TableHead>{t("total")}</TableHead><TableHead>{t("costAmount")}</TableHead><TableHead>{t("profitAmount")}</TableHead><TableHead>{t("operation")}</TableHead></TableRow></TableHeader>
           <TableBody>
             {page.items.length ? page.items.map((serverRow) => {
-              // 优先用内存里（乐观更新后）的版本展示，避免内联改状态/技师后瞬间回弹到服务端旧值。
-              const repair = repairLookup.get(serverRow.id) || serverRow;
+              // 优先用本地覆盖层（行内编辑保存后）的版本展示，避免改状态/技师后瞬间回弹到服务端旧值。
+              const repair = rowOverlay.get(serverRow.id) || serverRow;
               const client = getClient(repair.clientId, repair);
               const isWarranty = repair.orderType === "warranty";
               const amount = chargeAmount(repair);
@@ -2753,11 +2760,20 @@ function QuickFindPage({ data, navigate, lang, t }) {
   const streamRef = useRef(null);
   const zxingControlsRef = useRef(null);
   const normalizedQuery = query.trim().toLowerCase();
-  const repairs = data.repairs || [];
-  const exactRepair = repairs.find((repair) => String(repair.ticket || "").toLowerCase() === normalizedQuery);
-  const matches = normalizedQuery
-    ? repairs.filter((repair) => [repair.ticket, repair.brand, repair.model, repair.issue].join(" ").toLowerCase().includes(normalizedQuery)).slice(0, 8)
-    : repairs.slice(0, 8);
+  // 服务端搜索：防抖后按关键词取前 8 条；空关键词展示最近 8 单。
+  const [matches, setMatches] = useState([]);
+  useEffect(() => {
+    let active = true;
+    const handle = setTimeout(() => {
+      const params = new URLSearchParams({ pageSize: "8" });
+      if (normalizedQuery) params.set("q", normalizedQuery);
+      apiGet(`/api/repairs/search?${params.toString()}`)
+        .then((res) => { if (active) setMatches(res.rows || []); })
+        .catch(() => { if (active) setMatches([]); });
+    }, normalizedQuery ? 250 : 0);
+    return () => { active = false; clearTimeout(handle); };
+  }, [normalizedQuery]);
+  const exactRepair = matches.find((repair) => String(repair.ticket || "").toLowerCase() === normalizedQuery);
 
   const stopCamera = () => {
     zxingControlsRef.current?.stop?.();
@@ -2775,11 +2791,17 @@ function QuickFindPage({ data, navigate, lang, t }) {
     stopCamera();
     navigate(`/dashboard/repairs/${repair.id}`);
   };
-  const openTicketValue = (rawValue) => {
+  const openTicketValue = async (rawValue) => {
     const value = scannedTicketValue(rawValue);
     if (!value) return;
     setQuery(value);
-    const found = findRepairByTicket(repairs, rawValue);
+    let found = null;
+    try {
+      const result = await apiGet(`/api/repairs/lookup?value=${encodeURIComponent(rawValue)}`);
+      found = result.repair || null;
+    } catch {
+      found = null;
+    }
     if (found) openRepair(found);
     else setMessage(t("noOrderFound"));
   };
@@ -2855,9 +2877,7 @@ function QuickFindPage({ data, navigate, lang, t }) {
       streamRef.current?.getTracks?.().forEach((track) => track.stop());
       streamRef.current = null;
     };
-  }, [cameraActive, repairs, t]);
-
-  if (data._fullLoaded === false) return <section className="page"><Empty>{t("loading")}</Empty></section>;
+  }, [cameraActive, t]);
 
   return (
     <section className="page quick-find-page">

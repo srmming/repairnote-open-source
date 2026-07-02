@@ -183,6 +183,49 @@ export async function searchRepairs(params = {}) {
   };
 }
 
+// 扫码/快速开单：候选值（原文、票号数字、URL 片段）精确匹配 ticket / publicToken / id，
+// 全部走唯一索引；口径与前端 findRepairByTicket/scanCandidates 一致。
+export async function lookupRepairByScan(rawValue) {
+  const candidates = scanLookupCandidates(rawValue);
+  if (!candidates.length) return null;
+  const repair = await prisma.repair.findFirst({
+    where: { OR: [{ ticket: { in: candidates } }, { publicToken: { in: candidates } }, { id: { in: candidates } }] },
+    select: { id: true, ticket: true, orderType: true }
+  });
+  return repair || null;
+}
+
+function scannedTicketDigits(rawValue) {
+  const value = String(rawValue || "").trim();
+  if (!value) return "";
+  const direct = value.match(/\bW?\d{8,}\b/i);
+  if (direct) return direct[0];
+  const digits = value.replace(/[^\d]/g, "");
+  return digits.length >= 8 ? digits : value;
+}
+
+function scanLookupCandidates(rawValue) {
+  const value = String(rawValue || "").trim();
+  const candidates = new Set();
+  const add = (item) => {
+    const next = String(item || "").trim().toLowerCase();
+    if (next) candidates.add(next);
+  };
+  add(value);
+  add(scannedTicketDigits(value));
+  try {
+    const url = new URL(value);
+    url.pathname.split("/").filter(Boolean).forEach(add);
+    url.hash.split(/[/?#=&\s]+/).filter(Boolean).forEach(add);
+    add(url.searchParams.get("ticket"));
+    add(url.searchParams.get("id"));
+    add(url.searchParams.get("token"));
+  } catch {
+    value.split(/[/?#=&\s]+/).forEach(add);
+  }
+  return [...candidates];
+}
+
 // 技师筛选口径与前端 repairMatchesTechnicianKey 完全一致：
 // - "unassigned"：technicianId 不是在册技师，且 technicianName 为空
 // - "id:<技师id>"：technicianId 精确匹配，或（technicianId 不在册且 technicianName 等于该技师姓名，兼容历史单）
