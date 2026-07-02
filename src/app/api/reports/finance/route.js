@@ -9,6 +9,7 @@ export async function GET(request) {
       start: params.get("start") || "",
       end: params.get("end") || "",
       q: params.get("q") || "",
+      today: params.get("today") || "",
       paymentsPage: params.get("paymentsPage") || "1",
       unpaidPage: params.get("unpaidPage") || "1",
       pageSize: params.get("pageSize") || ""

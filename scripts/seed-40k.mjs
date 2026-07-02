@@ -110,13 +110,15 @@ async function main() {
       const warrantyChargeable = isWarranty && rand() < 0.15;
 
       const hasItems = rand() < 0.6;
+      // 约 4% 的有明细单为「免费换件」（全 0 价明细 + 有预算），覆盖 charge 口径的 items.length 边界
+      const zeroPricedItems = hasItems && rand() < 0.04;
       let itemsTotal = 0;
       const names = [];
       if (hasItems) {
         const count = 1 + Math.floor(rand() * 3);
         for (let j = 0; j < count; j++) {
-          const price = money(10 + rand() * 290);
-          const cost = money(price * (0.3 + rand() * 0.3));
+          const price = zeroPricedItems ? 0 : money(10 + rand() * 290);
+          const cost = zeroPricedItems ? money(2 + rand() * 10) : money(price * (0.3 + rand() * 0.3));
           itemsTotal = money(itemsTotal + price);
           const name = pick(ITEM_NAMES);
           names.push(name);
@@ -124,7 +126,7 @@ async function main() {
           itemCount++;
         }
       }
-      const budget = hasItems ? 0 : money(20 + rand() * 230);
+      const budget = hasItems ? (zeroPricedItems ? money(20 + rand() * 80) : 0) : money(20 + rand() * 230);
       const costAmount = hasItems ? 0 : money(budget * (0.3 + rand() * 0.3));
       const discountAmount = rand() < 0.06 ? money(5 + rand() * 20) : 0;
       const total = isWarranty && !warrantyChargeable ? 0 : Math.max(0, money((hasItems ? itemsTotal : budget) - discountAmount));

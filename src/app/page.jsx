@@ -2652,7 +2652,7 @@ function QuickFindPage({ data, navigate, lang, t }) {
         .catch(() => { if (active) setMatches([]); });
     }, normalizedQuery ? 250 : 0);
     return () => { active = false; clearTimeout(handle); };
-  }, [normalizedQuery]);
+  }, [normalizedQuery, data._revision]);
   const exactRepair = matches.find((repair) => String(repair.ticket || "").toLowerCase() === normalizedQuery);
 
   const stopCamera = () => {
@@ -2937,7 +2937,7 @@ function ClientsPage({ data, deleteClientRecord, filters, setFilters, setModal, 
                   <TableCell data-label={t("email")}>{client.email || "-"}</TableCell>
                   <TableCell data-label={t("address")}>{client.address || "-"}</TableCell>
                   <TableCell data-label={t("operation")} onClick={(event) => event.stopPropagation()}>
-                    <Button size="sm" variant="outline" onClick={() => setModal({ type: "client", id: client.id })}><Pencil {...ICON_SM} /> {t("edit")}</Button>{" "}
+                    <Button size="sm" variant="outline" onClick={() => setModal({ type: "client", id: client.id, record: client })}><Pencil {...ICON_SM} /> {t("edit")}</Button>{" "}
                     <Button size="sm" variant="danger" onClick={() => remove(client.id)}><Trash2 {...ICON_SM} /> {t("delete")}</Button>
                   </TableCell>
                 </TableRow>
@@ -2989,9 +2989,19 @@ function ClientOrdersPage({ data, clientId, navigate, filters, setFilters, lang,
     totalPages: Math.max(1, Math.ceil(serverOrders.total / PAGE_SIZE)),
     items: serverOrders.rows
   };
-  const client = serverOrders.rows[0]
-    ? { name: serverOrders.rows[0].clientName || "", phone: serverOrders.rows[0].clientPhone || "" }
-    : null;
+  const [clientInfo, setClientInfo] = useState(null);
+  useEffect(() => {
+    let active = true;
+    apiGet(`/api/clients/search?clientId=${encodeURIComponent(clientId)}&pageSize=1`)
+      .then((res) => { if (active) setClientInfo(res.rows?.[0] || null); })
+      .catch(() => { if (active) setClientInfo(null); });
+    return () => { active = false; };
+  }, [clientId, data._revision]);
+  const client = clientInfo
+    ? { name: clientInfo.name || "", phone: clientInfo.phone || "" }
+    : serverOrders.rows[0]
+      ? { name: serverOrders.rows[0].clientName || "", phone: serverOrders.rows[0].clientPhone || "" }
+      : null;
   const totals = { amount: serverTotals.amount, profit: serverTotals.profit, open: serverTotals.openCount };
   const updateDate = (key, value) => {
     const next = { ...filters, [key]: value, clientOrdersPage: 1 };
@@ -3775,6 +3785,7 @@ function FinancePage({ data, filters, setFilters, navigate, lang, t }) {
       start: range.start || "",
       end: range.end || "",
       q: committedSearch,
+      today: dateOnly(new Date()),
       paymentsPage: String(filters.financePaymentsPage || 1),
       unpaidPage: String(filters.financeUnpaidPage || 1),
       pageSize: String(FINANCE_PAGE_SIZE)
@@ -3828,7 +3839,8 @@ function FinancePage({ data, filters, setFilters, navigate, lang, t }) {
   const toPage = (block, mapRow) => ({
     current: Number(block?.page || 1),
     total: Number(block?.total || 0),
-    totalPages: Math.max(1, Math.ceil(Number(block?.total || 0) / FINANCE_PAGE_SIZE)),
+    // 用服务端实际生效的 pageSize 计算总页数，避免两端常量不一致时截断后面的页
+    totalPages: Math.max(1, Math.ceil(Number(block?.total || 0) / (Number(block?.pageSize) || FINANCE_PAGE_SIZE))),
     items: (block?.rows || []).map(mapRow)
   });
   const paymentPage = toPage(financeData.payments, (row) => ({ ...row, repair: { id: row.repairId } }));
@@ -6107,7 +6119,8 @@ function ModalHost({ modal, setModal, data, saveClientRecord, saveStaffRecord, s
 function ModalForm({ modal, data, saveClientRecord, saveStaffRecord, saveNonRepairResource, close, toast, lang = "zh", t }) {
   const type = modal.type;
   const collection = type === "service" ? "services" : type === "part" ? "parts" : type === "staff" ? "users" : type === "attribute" ? "attributes" : type === "technician" ? "technicians" : `${type}s`;
-  const current = modal.id ? data[collection]?.find((item) => item.id === modal.id) : {};
+  // 客户等不再全量下发的资源，编辑时由打开方传入整行 record；其余资源仍可从内存目录取。
+  const current = modal.id ? (modal.record || data[collection]?.find((item) => item.id === modal.id)) : {};
   const fixedCategory = normalizeProductCategory(modal.category);
   const [form, setForm] = useState(modal.id ? (current || {}) : { category: fixedCategory, ...(current || {}) });
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -6869,7 +6882,7 @@ async function resolveRepairClientForSaveRemote(workingDraft) {
   if (!clientName || !clientPhone) return { clientId: "", clientToCreate: null };
   let existingClient = null;
   try {
-    const result = await apiGet(`/api/clients/search?q=${encodeURIComponent(clientPhone)}&pageSize=20`);
+    const result = await apiGet(`/api/clients/search?phone=${encodeURIComponent(clientPhone)}&pageSize=100`);
     existingClient = (result.rows || []).find((client) => String(client.name || "").toLowerCase() === clientName.toLowerCase() && client.phone === clientPhone) || null;
   } catch {
     return { failed: true };

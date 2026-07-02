@@ -3,10 +3,11 @@ import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/auth";
 import { defaultSettings, normalizeStatus, statusOrder } from "@/lib/seed-data";
 import { buildRepairSearchText, ticketSortValue } from "@/lib/search-text";
-import { computeListAggregates } from "@/lib/repair-amounts";
 import crypto from "crypto";
 
 const moneyNumber = (value) => Number(value || 0);
+// LIKE 参数中的 % _ \ 转成字面量，保持与前端「包含」语义一致。
+const likePattern = (value) => String(value).replace(/[\\%_]/g, (ch) => `\\${ch}`);
 const DEFAULT_CLIENT_LEVEL = "VIP";
 const CLIENT_LEVELS = [DEFAULT_CLIENT_LEVEL, "超级 VIP", "黑名单"];
 const dbMoney = (value, fallback = 0) => {
@@ -190,13 +191,21 @@ const OPEN_EXCLUDED_STATUSES = ["已取走", "Entregado", "取消", "Cerrado", "
 
 export async function searchClients(params = {}) {
   const q = String(params.q || "").trim().toLowerCase();
+  const clientId = String(params.clientId || "").trim();
+  const phone = String(params.phone || "").trim();
   const filter = String(params.filter || "all");
   const sort = String(params.sort || "latest");
   const page = Math.max(1, Number(params.page) || 1);
   const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20));
 
-  const conds = [Prisma.sql`1 = 1`];
-  if (q) conds.push(Prisma.sql`LOWER(CONCAT_WS(' ', c.name, c.identity, c.email, c.phone, c.address)) LIKE ${`%${q}%`}`);
+  // 只作用于 Client 表本身的条件（q/clientId/phone），也用于把统计子查询窄化到候选客户。
+  const clientConds = [Prisma.sql`1 = 1`];
+  if (q) clientConds.push(Prisma.sql`LOWER(CONCAT_WS(' ', c.name, c.identity, c.email, c.phone, c.address)) LIKE ${`%${likePattern(q)}%`}`);
+  if (clientId) clientConds.push(Prisma.sql`c.id = ${clientId}`);
+  if (phone) clientConds.push(Prisma.sql`c.phone = ${phone}`);
+  const clientCondSql = Prisma.join(clientConds, " AND ");
+
+  const conds = [clientCondSql];
   if (filter === "open") conds.push(Prisma.sql`COALESCE(s.openTotal, 0) > 0`);
   if (filter === "records") conds.push(Prisma.sql`COALESCE(s.repairTotal, 0) > 0`);
   if (filter === "no-records") conds.push(Prisma.sql`COALESCE(s.repairTotal, 0) = 0`);
@@ -210,12 +219,15 @@ export async function searchClients(params = {}) {
         ? Prisma.sql`c.name ASC`
         : Prisma.sql`COALESCE(s.latestSortKey, '') DESC, COALESCE(s.repairTotal, 0) DESC, c.name ASC`;
 
+  // 统计只对候选客户做 GROUP BY，避免每次搜索都全表聚合。
   const statsSql = Prisma.sql`
     SELECT clientId,
            COUNT(*) AS repairTotal,
-           COALESCE(SUM(status NOT IN (${Prisma.join(OPEN_EXCLUDED_STATUSES)})), 0) AS openTotal,
+           COALESCE(SUM(status COLLATE utf8mb4_bin NOT IN (${Prisma.join(OPEN_EXCLUDED_STATUSES)})), 0) AS openTotal,
            MAX(CASE WHEN COALESCE(repairTime, '') <> '' THEN repairTime ELSE ticket END) AS latestSortKey
-    FROM Repair GROUP BY clientId
+    FROM Repair
+    WHERE clientId IN (SELECT c.id FROM Client c WHERE ${clientCondSql})
+    GROUP BY clientId
   `;
 
   const [countRows, rows] = await Promise.all([
@@ -268,12 +280,25 @@ export async function searchClients(params = {}) {
 }
 
 // 删除某个「历史维修师」（不在册、仅按姓名记录）名下的全部维修单。
-// 只允许 name: 前缀的历史桶，避免误删在册技师的单。
+// 只允许 name: 前缀且姓名非空的历史桶：空姓名会命中「未分配」桶，等于误删无技师的单。
+// 与单删接口保持同一条业务约束：名下有单已被（桶外的）保修单引用时拒绝删除。
 export async function deleteTechnicianHistory(technicianKey) {
   const key = String(technicianKey || "").trim();
   if (!key.startsWith("name:")) throwBadRequest("只能删除历史维修师的记录");
+  if (!key.slice(5).trim()) throwBadRequest("必须指定要删除的历史维修师姓名");
   const where = await technicianKeyFilter(key);
-  const result = await prisma.repair.deleteMany({ where });
+  const result = await prisma.$transaction(async (tx) => {
+    const targets = await tx.repair.findMany({ where, select: { id: true } });
+    if (!targets.length) return { count: 0 };
+    const ids = targets.map((row) => row.id);
+    const linked = await tx.repair.count({ where: { orderType: "warranty", sourceRepairId: { in: ids }, id: { notIn: ids } } });
+    if (linked) {
+      const error = new Error("该维修师名下有维修单已创建保修单，不能删除");
+      error.status = 409;
+      throw error;
+    }
+    return tx.repair.deleteMany({ where: { id: { in: ids } } });
+  }, { timeout: 60000 });
   return { ok: true, deleted: result.count, _revisionPatch: await getRevisionPatch(["repairs"]) };
 }
 
@@ -356,7 +381,7 @@ export async function aggregateRepairs(params = {}) {
   const technicianKey = String(params.technicianKey || "").trim();
 
   const conds = [Prisma.sql`1 = 1`];
-  if (q) conds.push(Prisma.sql`r.searchText LIKE ${`%${q}%`}`);
+  if (q) conds.push(Prisma.sql`r.searchText LIKE ${`%${likePattern(q)}%`}`);
   if (status) conds.push(Prisma.sql`r.status = ${status}`);
   if (orderType) conds.push(Prisma.sql`r.orderType = ${orderType}`);
   if (clientId) conds.push(Prisma.sql`r.clientId = ${clientId}`);
@@ -366,39 +391,77 @@ export async function aggregateRepairs(params = {}) {
   if (end) conds.push(Prisma.sql`r.repairTime <= ${`${end}~`}`);
   const whereSql = Prisma.join(conds, " AND ");
 
-  const [rows, technicians] = await Promise.all([
+  // 全部聚合在 SQL 完成（应用内存只有每技师一行的分组结果）。金额口径与前端一致：
+  // charge = 保修不收费 ? 0 : max(0, (有明细行 ? 明细合计 : 预算) - 折扣)；cost = 明细成本>0 ? 明细成本 : 成本。
+  // 状态判定按原始值精确匹配（COLLATE utf8mb4_bin），与前端 normalizeStatus 的映射口径一致。
+  const derivedSql = Prisma.sql`
+    SELECT r.technicianId, r.technicianName COLLATE utf8mb4_bin AS technicianName, r.orderType,
+           (r.status COLLATE utf8mb4_bin IN (${Prisma.join(AGG_CANCELED_STATUSES)})) AS canceled,
+           (r.status COLLATE utf8mb4_bin IN (${Prisma.join(AGG_LOCKED_STATUSES)})) AS locked,
+           CASE WHEN r.orderType = 'warranty' AND r.warrantyChargeable = 0 THEN 0
+                ELSE GREATEST(0, (CASE WHEN COALESCE(i.itemsCount, 0) > 0 THEN COALESCE(i.itemsTotal, 0) ELSE r.budget END) - r.discountAmount) END AS charge,
+           CASE WHEN COALESCE(i.itemsCostTotal, 0) > 0 THEN i.itemsCostTotal ELSE r.costAmount END AS cost
+    FROM Repair r
+    LEFT JOIN (SELECT repairId, COUNT(*) AS itemsCount, SUM(qty * price) AS itemsTotal, SUM(qty * cost) AS itemsCostTotal FROM RepairItem GROUP BY repairId) i ON i.repairId = r.id
+    WHERE ${whereSql}`;
+
+  const [groups, technicians] = await Promise.all([
     prisma.$queryRaw(Prisma.sql`
-      SELECT r.id AS id, r.status AS status, r.orderType AS orderType,
-             (r.warrantyChargeable + 0) AS warrantyChargeable,
-             r.budget AS budget, r.discountAmount AS discountAmount, r.costAmount AS costAmount,
-             r.technicianId AS technicianId, r.technicianName AS technicianName,
-             COALESCE(SUM(i.qty * i.price), 0) AS itemsTotal,
-             COALESCE(SUM(i.qty * i.cost), 0) AS itemsCostTotal
-      FROM Repair r LEFT JOIN RepairItem i ON i.repairId = r.id
-      WHERE ${whereSql}
-      GROUP BY r.id
+      SELECT d.technicianId, d.technicianName,
+             COALESCE(SUM(d.canceled = 0 AND d.orderType = 'warranty'), 0) AS warrantyCount,
+             COALESCE(SUM(d.canceled = 0 AND d.orderType <> 'warranty'), 0) AS repairCount,
+             COALESCE(SUM(CASE WHEN d.canceled = 0 THEN d.charge ELSE 0 END), 0) AS amount,
+             COALESCE(SUM(CASE WHEN d.canceled = 0 THEN d.cost ELSE 0 END), 0) AS cost,
+             COALESCE(SUM(d.locked = 0), 0) AS openCount
+      FROM (${derivedSql}) d
+      GROUP BY d.technicianId, d.technicianName
     `),
     prisma.technician.findMany()
   ]);
 
-  const lite = rows.map((row) => ({
-    status: row.status,
-    orderType: row.orderType,
-    warrantyChargeable: Number(row.warrantyChargeable) !== 0,
-    budget: row.budget,
-    discountAmount: row.discountAmount,
-    costAmount: row.costAmount,
-    itemsTotal: row.itemsTotal,
-    itemsCostTotal: row.itemsCostTotal,
-    technicianId: row.technicianId,
-    technicianName: row.technicianName
-  }));
-  // businessCount / openCount：客户订单页与技师订单页的「单数 / 未完结」指标，
-  // 口径同前端（非取消；未完结 = 归一后不是已取走/取消）。
-  const businessCount = lite.filter((row) => normalizeStatus(row.status) !== "取消").length;
-  const openCount = lite.filter((row) => !["已取走", "取消"].includes(normalizeStatus(row.status))).length;
-  return { ...computeListAggregates(lite, technicians), businessCount, openCount };
+  // JS 只负责把（技师 id / 历史姓名）小分组归并成前端桶，口径同旧 computeListAggregates。
+  const technicianById = new Map(technicians.map((technician) => [technician.id, technician]));
+  const technicianByName = new Map();
+  for (const technician of technicians) {
+    const name = String(technician.name || "").trim().toLowerCase();
+    if (name && !technicianByName.has(name)) technicianByName.set(name, technician);
+  }
+  const buckets = new Map();
+  const totals = { amount: 0, cost: 0, profit: 0 };
+  let businessCount = 0;
+  let openCount = 0;
+  for (const group of groups) {
+    const legacyName = String(group.technicianName || "").trim();
+    const technician = technicianById.get(group.technicianId) || technicianByName.get(legacyName.toLowerCase());
+    const key = technician?.id ? `id:${technician.id}` : legacyName ? `name:${legacyName}` : "unassigned";
+    const bucket = buckets.get(key) || { id: key, name: technician?.name || legacyName || "", isUnassigned: key === "unassigned", orderCount: 0, repairCount: 0, warrantyCount: 0, amount: 0, cost: 0, profit: 0 };
+    const repairCountValue = Number(group.repairCount);
+    const warrantyCountValue = Number(group.warrantyCount);
+    bucket.repairCount += repairCountValue;
+    bucket.warrantyCount += warrantyCountValue;
+    bucket.orderCount += repairCountValue + warrantyCountValue;
+    bucket.amount += moneyNumber(group.amount);
+    bucket.cost += moneyNumber(group.cost);
+    bucket.profit = bucket.amount - bucket.cost;
+    buckets.set(key, bucket);
+    totals.amount += moneyNumber(group.amount);
+    totals.cost += moneyNumber(group.cost);
+    businessCount += repairCountValue + warrantyCountValue;
+    openCount += Number(group.openCount);
+  }
+  totals.profit = totals.amount - totals.cost;
+
+  const technicianRows = [...buckets.values()]
+    .filter((row) => row.orderCount)
+    .sort((a, b) => Number(a.isUnassigned) - Number(b.isUnassigned) || b.profit - a.profit || b.amount - a.amount || b.orderCount - a.orderCount || String(a.name).localeCompare(String(b.name)));
+
+  return { totals, technicianRows, businessCount, openCount };
 }
+
+// normalizeStatus 会归一为「取消 / 已取走」的全部原始值（含旧数据的西语/别名）。
+const AGG_CANCELED_STATUSES = ["取消", "Cerrado", "Cancelar", "关闭", "拒保"];
+const AGG_LOCKED_STATUSES = ["已取走", "Entregado", ...AGG_CANCELED_STATUSES];
+
 
 // technicianKey 的原生 SQL 版本（口径同 technicianKeyFilter / 前端 repairMatchesTechnicianKey）。
 async function technicianKeyRawSql(technicianKey) {

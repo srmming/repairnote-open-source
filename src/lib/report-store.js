@@ -11,6 +11,9 @@ const money = (value) => {
   return Number.isFinite(n) ? n : 0;
 };
 
+// LIKE 参数中的 % _ \ 转成字面量，保持与前端「包含」语义一致。
+const likePattern = (value) => String(value).replace(/[\\%_]/g, (ch) => `\\${ch}`);
+
 // normalizeStatus 里会归一为「取消」的所有原始值（含旧数据的西语/别名）。
 const CANCELED_STATUSES = ["取消", "Cerrado", "Cancelar", "关闭", "拒保"];
 
@@ -24,13 +27,13 @@ const DERIVED_REPAIRS_SQL = Prisma.sql`
          LEFT(r.repairTime, 10) AS repairDay,
          COALESCE(NULLIF(LEFT(r.repairTime, 10), ''), DATE_FORMAT(r.createdAt, '%Y-%m-%d')) AS effectiveDay,
          CASE WHEN r.orderType = 'warranty' AND r.warrantyChargeable = 0 THEN 0
-              ELSE GREATEST(0, (CASE WHEN COALESCE(i.itemsTotal, 0) > 0 THEN i.itemsTotal ELSE r.budget END) - r.discountAmount) END AS charge,
+              ELSE GREATEST(0, (CASE WHEN COALESCE(i.itemsCount, 0) > 0 THEN COALESCE(i.itemsTotal, 0) ELSE r.budget END) - r.discountAmount) END AS charge,
          CASE WHEN COALESCE(i.itemsCostTotal, 0) > 0 THEN i.itemsCostTotal ELSE r.costAmount END AS cost,
          CASE WHEN COALESCE(p.payCount, 0) > 0 THEN p.paidTotal WHEN r.deposit >= 0.01 THEN r.deposit ELSE 0 END AS paid
   FROM Repair r
-  LEFT JOIN (SELECT repairId, SUM(qty * price) AS itemsTotal, SUM(qty * cost) AS itemsCostTotal FROM RepairItem GROUP BY repairId) i ON i.repairId = r.id
+  LEFT JOIN (SELECT repairId, COUNT(*) AS itemsCount, SUM(qty * price) AS itemsTotal, SUM(qty * cost) AS itemsCostTotal FROM RepairItem GROUP BY repairId) i ON i.repairId = r.id
   LEFT JOIN (SELECT repairId, SUM(amount) AS paidTotal, COUNT(*) AS payCount FROM Payment GROUP BY repairId) p ON p.repairId = r.id
-  WHERE r.status NOT IN (${Prisma.join(CANCELED_STATUSES)})
+  WHERE r.status COLLATE utf8mb4_bin NOT IN (${Prisma.join(CANCELED_STATUSES)})
 `;
 
 // 报表页口径：按 repairTime 的日期部分过滤（repairTime 为空时，只有「不限日期」才会包含，与前端一致）。
@@ -169,7 +172,7 @@ function paymentsUnionSql() {
            DATE_FORMAT(p.paidAt, '%Y-%m-%dT%H:%i:%s.000Z') AS paidAt,
            DATE_FORMAT(p.paidAt, '%Y-%m-%d') AS paidDay
     FROM Payment p
-    JOIN Repair r ON r.id = p.repairId AND r.status NOT IN (${Prisma.join(CANCELED_STATUSES)})
+    JOIN Repair r ON r.id = p.repairId AND r.status COLLATE utf8mb4_bin NOT IN (${Prisma.join(CANCELED_STATUSES)})
     LEFT JOIN Client c ON c.id = r.clientId
     WHERE ABS(p.amount) >= 0.005
     UNION ALL
@@ -180,7 +183,7 @@ function paymentsUnionSql() {
            COALESCE(NULLIF(LEFT(r.repairTime, 10), ''), DATE_FORMAT(r.createdAt, '%Y-%m-%d')) AS paidDay
     FROM Repair r
     LEFT JOIN Client c ON c.id = r.clientId
-    WHERE r.status NOT IN (${Prisma.join(CANCELED_STATUSES)})
+    WHERE r.status COLLATE utf8mb4_bin NOT IN (${Prisma.join(CANCELED_STATUSES)})
       AND r.deposit >= 0.01
       AND NOT EXISTS (SELECT 1 FROM Payment px WHERE px.repairId = r.id AND ABS(px.amount) >= 0.005)
   `;
@@ -190,21 +193,21 @@ function paymentsWhereSql({ start, end, q }) {
   const conds = [Prisma.sql`1 = 1`];
   if (start) conds.push(Prisma.sql`u.paidDay >= ${start}`);
   if (end) conds.push(Prisma.sql`u.paidDay <= ${end}`);
-  if (q) conds.push(Prisma.sql`LOWER(CONCAT_WS(' ', u.ticket, u.clientName, u.clientPhone, u.note)) LIKE ${`%${q}%`}`);
+  if (q) conds.push(Prisma.sql`LOWER(CONCAT_WS(' ', u.ticket, u.clientName, u.clientPhone, u.note)) LIKE ${`%${likePattern(q)}%`}`);
   return Prisma.join(conds, " AND ");
 }
 
-export async function reportFinance({ start = "", end = "", q = "", paymentsPage = 1, unpaidPage = 1, pageSize = 10 } = {}) {
+export async function reportFinance({ start = "", end = "", q = "", paymentsPage = 1, unpaidPage = 1, pageSize = 10, today = "" } = {}) {
   const query = String(q || "").trim().toLowerCase();
-  const size = Math.min(100, Math.max(1, Number(pageSize) || 10));
+  const size = Math.min(200, Math.max(1, Number(pageSize) || 10));
   const payPage = Math.max(1, Number(paymentsPage) || 1);
   const duePage = Math.max(1, Number(unpaidPage) || 1);
   const range = financeRangeSql(start, end);
   const payWhere = paymentsWhereSql({ start, end, q: query });
   const unpaidSearch = query
-    ? Prisma.sql`AND LOWER(CONCAT_WS(' ', d.ticket, d.clientName, d.clientPhone, d.brand, d.model, d.issue)) LIKE ${`%${query}%`}`
+    ? Prisma.sql`AND LOWER(CONCAT_WS(' ', d.ticket, d.clientName, d.clientPhone, d.brand, d.model, d.issue)) LIKE ${`%${likePattern(query)}%`}`
     : Prisma.sql``;
-  const today = dateOnly(new Date());
+  const todayKey = /^\d{4}-\d{2}-\d{2}$/.test(String(today)) ? String(today) : dateOnly(new Date());
 
   const derivedWithClient = Prisma.sql`
     SELECT d0.*, COALESCE(c.name, '') AS clientName, COALESCE(c.phone, '') AS clientPhone
@@ -247,14 +250,14 @@ export async function reportFinance({ start = "", end = "", q = "", paymentsPage
              COALESCE(SUM(GREATEST(0, d.charge - d.paid)), 0) AS unpaid,
              COALESCE(SUM(d.cost), 0) AS cost,
              COALESCE(SUM(d.charge - d.cost), 0) AS profit
-      FROM (${DERIVED_REPAIRS_SQL}) d WHERE d.effectiveDay = ${today}
+      FROM (${DERIVED_REPAIRS_SQL}) d WHERE d.effectiveDay = ${todayKey}
     `),
     // 今日经营：收款指标（当日收款，含订金/尾款拆分）
     prisma.$queryRaw(Prisma.sql`
       SELECT COALESCE(SUM(u.amount), 0) AS collected, COUNT(*) AS paymentCount,
              COALESCE(SUM(CASE WHEN LOWER(u.note) LIKE '%订金%' OR LOWER(u.note) LIKE '%depósito%' OR LOWER(u.note) LIKE '%deposito%' THEN u.amount ELSE 0 END), 0) AS depositCollected,
              COALESCE(SUM(CASE WHEN LOWER(u.note) LIKE '%尾款%' OR LOWER(u.note) LIKE '%pago final%' THEN u.amount ELSE 0 END), 0) AS finalCollected
-      FROM (${paymentsUnionSql()}) u WHERE u.paidDay = ${today}
+      FROM (${paymentsUnionSql()}) u WHERE u.paidDay = ${todayKey}
     `)
   ]);
 
@@ -338,7 +341,7 @@ export async function technicianDashboard({ date = "" } = {}) {
              COALESCE(SUM(CASE WHEN d.orderType <> 'warranty' THEN d.charge ELSE 0 END), 0) AS repairAmount,
              COALESCE(SUM(CASE WHEN d.orderType <> 'warranty' THEN d.charge - d.cost ELSE 0 END), 0) AS repairProfit,
              COALESCE(SUM(CASE WHEN d.orderType = 'warranty' THEN GREATEST(0, d.cost - d.charge) ELSE 0 END), 0) AS warrantyLoss,
-             COALESCE(SUM(d.status NOT IN (${Prisma.join(DASHBOARD_LOCKED_STATUSES)})), 0) AS openCount
+             COALESCE(SUM(d.status COLLATE utf8mb4_bin NOT IN (${Prisma.join(DASHBOARD_LOCKED_STATUSES)})), 0) AS openCount
       FROM (${DERIVED_REPAIRS_SQL}) d WHERE ${dateCond}
       GROUP BY d.technicianId, d.technicianName COLLATE utf8mb4_bin
     `),
