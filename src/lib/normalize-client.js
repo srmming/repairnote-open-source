@@ -181,7 +181,7 @@ export function normalizeData(data) {
   return {
     _revision: data._revision || "",
     _settingsUpdatedAt: data._settingsUpdatedAt || "",
-    _fullLoaded: data._fullLoaded,
+    _counts: data.counts || data._counts || null,
     users,
     technicians: normalizeTechnicians(data.technicians || [], users),
     clients: clients.map((client) => ({ ...client, level: normalizeClientLevel(client.level) })),

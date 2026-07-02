@@ -1,102 +1,31 @@
-import { authErrorResponse, canAccessPage, requireAnyPageAccess } from "@/lib/auth";
+import { authErrorResponse, requireAnyPageAccess } from "@/lib/auth";
 import { ensureDailyAutoBackup } from "@/lib/backup-store";
-import { getBootstrapData, syncFromClientData, syncNonRepairBusinessData } from "@/lib/data-store";
-import { validateBusinessDataShape } from "@/lib/data-validation";
+import { getBootstrapData } from "@/lib/data-store";
+import { prisma } from "@/lib/prisma";
 
-export async function GET(request) {
+// 轻量引导：只返回目录/技师/设置/员工等小数据 + 总量计数。
+// 维修单与客户不再整包下发，列表、统计、搜索一律走各自的服务端接口；
+// 写操作走各资源接口（/api/repairs/[id]、/api/clients、/api/catalog…），本路由不再有整包 PUT。
+export async function GET() {
   try {
     const staff = await requireAnyPageAccess();
-    const scope = new URL(request.url).searchParams.get("scope");
-    const options = scope === "light" ? { includeRepairs: false, includeClients: false } : {};
-    const data = await getBootstrapData(options);
-    return Response.json(compactBootstrap(staff.isAdmin ? data : { ...data, users: [{ ...staff }] }));
+    const [data, repairCount, clientCount] = await Promise.all([
+      getBootstrapData({ includeRepairs: false, includeClients: false }),
+      prisma.repair.count(),
+      prisma.client.count()
+    ]);
+    // 每日自动备份挂在“当天第一次打开系统”上（有当日备份则直接跳过），失败不影响登录。
+    ensureDailyAutoBackup({ staff }).catch((error) => {
+      console.warn("Daily auto backup skipped on bootstrap:", error?.message || error);
+    });
+    const payload = staff.isAdmin ? data : { ...data, users: [{ ...staff }] };
+    return Response.json({
+      ...payload,
+      clients: undefined,
+      repairs: undefined,
+      counts: { repairs: repairCount, clients: clientCount }
+    });
   } catch (error) {
     return authErrorResponse(error);
   }
-}
-
-const clientColumns = ["id", "name", "docType", "identity", "email", "phone", "address", "comment", "level", "createdAt", "updatedAt"];
-const repairColumns = ["id", "ticket", "clientId", "brand", "model", "issue", "status", "repairTime", "warrantyStart", "technicianId", "technicianName", "budget", "deposit", "paymentMethod", "discountAmount", "costAmount", "publicToken", "orderType", "sourceRepairId", "warrantyReason", "warrantyDiagnosis", "warrantyResolution", "warrantyChargeable", "statusHistory", "createdAt", "updatedAt", "itemsTotal", "itemsCostTotal", "itemsCount", "itemsSummary", "itemsLoaded", "payments"];
-
-const bootstrapWriteSections = [
-  { permission: "repairs", keys: ["repairs", "clients"] },
-  { permission: "clients", keys: ["clients"] },
-  { permission: "categories", keys: ["brands", "models"] },
-  { permission: "modules", keys: ["parts"] },
-  { permission: "services", keys: ["services"] },
-  { permission: "attributes", keys: ["attributes"] },
-  { permission: "technicians", keys: ["technicians"] },
-  { permission: "settings", keys: ["settings"] }
-];
-
-function compactBootstrap(data) {
-  return {
-    ...data,
-    clients: undefined,
-    repairs: undefined,
-    clientsCompact: compactRows(data.clients || [], clientColumns),
-    repairsCompact: compactRows(data.repairs || [], repairColumns)
-  };
-}
-
-function compactRows(rows, columns) {
-  return {
-    columns,
-    rows: rows.map((row) => columns.map((column) => row[column] ?? null))
-  };
-}
-
-export async function PUT(request) {
-  try {
-    const staff = await requireAnyPageAccess();
-    const data = await request.json();
-    const current = await getBootstrapData();
-    if (data._revision && data._revision !== current._revision) {
-      const error = new Error("数据已被其他设备更新，请刷新页面后再保存");
-      error.status = 409;
-      throw error;
-    }
-    const validated = validateBusinessDataShape(data, "保存数据");
-    const { data: safeData, shouldPersist } = staff.isAdmin
-      ? { data: validated, shouldPersist: true }
-      : permittedBootstrapData(staff, validated, current);
-    if (!shouldPersist) return Response.json(current);
-    const saved = canUseNonRepairSave(validated, current)
-      ? await syncNonRepairBusinessData(safeData, { syncClients: !sameIdSet(validated.clients || [], current.clients || []) })
-      : await syncFromClientData(safeData);
-    try {
-      await ensureDailyAutoBackup({ staff, data: saved });
-    } catch (backupError) {
-      console.warn("Daily auto backup skipped after business save:", backupError?.message || backupError);
-    }
-    return Response.json(compactBootstrap(staff.isAdmin ? saved : { ...saved, users: [{ ...staff }] }));
-  } catch (error) {
-    return authErrorResponse(error);
-  }
-}
-
-function canUseNonRepairSave(requested, current) {
-  return sameIdSet(requested.repairs || [], current.repairs || []) && sameIdSet(requested.users || [], current.users || []);
-}
-
-function sameIdSet(leftRows, rightRows) {
-  if (leftRows.length !== rightRows.length) return false;
-  const ids = new Set(rightRows.map((row) => row.id).filter(Boolean));
-  return leftRows.every((row) => row?.id && ids.has(row.id));
-}
-
-function permittedBootstrapData(staff, requested, current) {
-  const writableKeys = new Set();
-  for (const section of bootstrapWriteSections) {
-    if (canAccessPage(staff, section.permission)) {
-      section.keys.forEach((key) => writableKeys.add(key));
-    }
-  }
-  if (!writableKeys.size) return { data: current, shouldPersist: false };
-
-  const safeData = { ...current, users: current.users };
-  for (const key of writableKeys) {
-    if (requested[key] !== undefined) safeData[key] = requested[key];
-  }
-  return { data: safeData, shouldPersist: true };
 }

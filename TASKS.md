@@ -74,11 +74,11 @@
 
 ## 阶段 5：备份收尾 + 移除全量路径
 
-- [ ] **T5.1** BackupPage 去 `data.repairs` 依赖：当前计数走服务端（bootstrap light 返回 counts），导入/恢复全走 `/api/backup/*`；旧备份文件格式保持可导入。验收：备份页展示计数正确，导入旧格式备份成功。
-- [ ] **T5.2** 删除全量加载：删 `src/app/bootstrap-worker.js`、`fetchFullBootstrapViaWorker`、`mergeFullBootstrap`；`/api/bootstrap` GET 不再返回全量 repairs/clients（light 语义成为唯一语义，返回 counts）。验收：`grep -rn "bootstrap-worker" src/` 0 命中；bootstrap 响应无全量 repairs。
-- [ ] **T5.3** 删除整包 PUT：page.jsx 中 `saveData` 的 `/api/bootstrap` PUT 路径移除，所有写操作走按资源接口（repairs/clients/staff/settings/catalog/attributes/technicians）；`/api/bootstrap` 的 PUT handler 删除。验收：`grep -n "api/bootstrap" src/app/page.jsx` 无 PUT 用法。
-- [ ] **T5.4** 性能取证：40k 库下展示 bootstrap 响应 repairs 数量为 0 或仅一页、search 单次响应 ≤ pageSize、记录接口耗时。
-- [ ] **T5.5** 全量验证：`npm run build` exit 0；`npm run smoke` 全绿（必要时 docker-compose 起库 + `npm run db:seed`）。
+- [x] **T5.1** BackupPage 去 `data.repairs` 依赖：当前计数走服务端（bootstrap light 返回 counts），导入/恢复全走 `/api/backup/*`；旧备份文件格式保持可导入。验收：备份页展示计数正确，导入旧格式备份成功。
+- [x] **T5.2** 删除全量加载：删 `src/app/bootstrap-worker.js`、`fetchFullBootstrapViaWorker`、`mergeFullBootstrap`；`/api/bootstrap` GET 不再返回全量 repairs/clients（light 语义成为唯一语义，返回 counts）。验收：`grep -rn "bootstrap-worker" src/` 0 命中；bootstrap 响应无全量 repairs。
+- [x] **T5.3** 删除整包 PUT：page.jsx 中 `saveData` 的 `/api/bootstrap` PUT 路径移除，所有写操作走按资源接口（repairs/clients/staff/settings/catalog/attributes/technicians）；`/api/bootstrap` 的 PUT handler 删除。验收：`grep -n "api/bootstrap" src/app/page.jsx` 无 PUT 用法。
+- [x] **T5.4** 性能取证：40k 库下展示 bootstrap 响应 repairs 数量为 0 或仅一页、search 单次响应 ≤ pageSize、记录接口耗时。
+- [x] **T5.5** 全量验证：`npm run build` exit 0；`npm run smoke` 全绿（必要时 docker-compose 起库 + `npm run db:seed`）。
 
 **检查点 CP5**：commit。
 

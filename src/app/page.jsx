@@ -1389,9 +1389,6 @@ export default function AppPage() {
   const preservingRepairDraftRouteRef = useRef("");
   const confirmedDataRef = useRef(data);
   const saveQueueRef = useRef(Promise.resolve());
-  const fullBootstrapRequestRef = useRef(null);
-  const fullBootstrapWorkerRef = useRef(null);
-  const fullBootstrapEpochRef = useRef(0);
   const lang = getLang(data.settings);
   const t = useMemo(() => makeT(lang), [lang]);
   const changeTheme = (nextTheme) => {
@@ -1557,130 +1554,22 @@ export default function AppPage() {
     setScanSearchOpen(true);
   }
 
-  function terminateFullBootstrapWorker() {
-    if (fullBootstrapWorkerRef.current) {
-      fullBootstrapWorkerRef.current.terminate();
-      fullBootstrapWorkerRef.current = null;
-    }
-  }
-
-  function applyMergedFullBootstrap(epoch, startRevision, fullNormalized) {
-    if (epoch !== fullBootstrapEpochRef.current) return;
-    const confirmedBefore = confirmedDataRef.current;
-    const merged = mergeFullBootstrap(confirmedBefore, fullNormalized, startRevision);
-    confirmedDataRef.current = merged;
-    const nextData = overlayOptimisticSnapshot(confirmedBefore, merged, dataRef.current);
-    dataRef.current = nextData;
-    startTransition(() => setData(nextData));
-    if (merged._fullLoaded === false) loadFullBootstrapInBackground();
-  }
-
-  function handleFullBootstrapFailure(epoch, error) {
-    if (epoch !== fullBootstrapEpochRef.current) return;
-    showToast(error?.message || t("loading"));
-    const fallback = { ...dataRef.current, _fullLoaded: true };
-    confirmedDataRef.current = fallback;
-    dataRef.current = fallback;
-    startTransition(() => setData(fallback));
-  }
-
-  function fetchFullBootstrapViaWorker(epoch) {
-    if (typeof Worker === "undefined") return Promise.reject(new Error("Worker unavailable"));
-    terminateFullBootstrapWorker();
-    const worker = new Worker(new URL("./bootstrap-worker.js", import.meta.url));
-    fullBootstrapWorkerRef.current = worker;
-    return new Promise((resolve, reject) => {
-      worker.onmessage = (event) => {
-        const message = event.data || {};
-        if (message.epoch !== epoch) return;
-        if (message.type === "ok") resolve(message.data);
-        else reject(new Error(message.message || "请求失败"));
-      };
-      worker.onerror = (event) => reject(new Error(event.message || "Worker failed"));
-      worker.postMessage({ type: "fetch", epoch });
-    }).finally(() => {
-      if (fullBootstrapWorkerRef.current === worker) {
-        worker.terminate();
-        fullBootstrapWorkerRef.current = null;
-      }
-    });
-  }
-
-  function fetchFullBootstrapViaMainThread(epoch) {
-    return apiGet("/api/bootstrap").then((fullRaw) => {
-      if (epoch !== fullBootstrapEpochRef.current) return null;
-      return normalizeData(fullRaw);
-    });
-  }
-
   async function bootstrap() {
-    fullBootstrapEpochRef.current += 1;
-    terminateFullBootstrapWorker();
-    fullBootstrapRequestRef.current = null;
     setLoading(true);
     try {
       const me = await apiGet("/api/auth/me");
       setSession(me.user);
       if (!me.user) return;
-      const lightData = await apiGet("/api/bootstrap?scope=light");
-      const normalized = { ...normalizeData(lightData), _fullLoaded: false };
+      const lightData = await apiGet("/api/bootstrap");
+      const normalized = normalizeData(lightData);
       confirmedDataRef.current = normalized;
       dataRef.current = normalized;
       setData(normalized);
-      loadFullBootstrapInBackground();
     } catch {
       setSession(null);
     } finally {
       setLoading(false);
     }
-  }
-
-  function loadFullBootstrapInBackground() {
-    const epoch = fullBootstrapEpochRef.current;
-    const startRevision = confirmedDataRef.current._revision || "";
-    const request = fetchFullBootstrapViaWorker(epoch)
-      .catch(() => fetchFullBootstrapViaMainThread(epoch))
-      .then((fullNormalized) => {
-        if (!fullNormalized) return;
-        applyMergedFullBootstrap(epoch, startRevision, fullNormalized);
-      })
-      .catch((error) => handleFullBootstrapFailure(epoch, error))
-      .finally(() => {
-        if (fullBootstrapRequestRef.current === request) fullBootstrapRequestRef.current = null;
-      });
-    fullBootstrapRequestRef.current = request;
-    return request;
-  }
-
-  async function saveData(updater) {
-    if (dataRef.current._fullLoaded === false) {
-      showToast(t("loading"));
-      return false;
-    }
-    const optimistic = typeof updater === "function" ? updater(dataRef.current) : updater;
-    const queuedPayload = optimistic;
-    dataRef.current = optimistic;
-    setData(optimistic);
-
-    saveQueueRef.current = saveQueueRef.current.catch(() => {}).then(async () => {
-      const base = confirmedDataRef.current;
-      const payload = { ...queuedPayload, _revision: base._revision || "", _settingsUpdatedAt: base._settingsUpdatedAt || "" };
-      try {
-        const saved = await apiJson("/api/bootstrap", "PUT", payload);
-        const normalized = normalizeData(saved);
-        confirmedDataRef.current = normalized;
-        dataRef.current = normalized;
-        startTransition(() => setData(normalized));
-        return true;
-      } catch (error) {
-        dataRef.current = confirmedDataRef.current;
-        setData(confirmedDataRef.current);
-        showToast(error.message || t("saveFailed"));
-        return false;
-      }
-    });
-
-    return saveQueueRef.current;
   }
 
   async function saveClientRecord(client) {
@@ -1901,17 +1790,13 @@ export default function AppPage() {
   if (!session) {
     return <Login theme={theme} onThemeChange={changeTheme} onLogin={async (username, password) => {
       const result = await apiJson("/api/auth/login", "POST", { username, password });
-      fullBootstrapEpochRef.current += 1;
-      terminateFullBootstrapWorker();
-      fullBootstrapRequestRef.current = null;
-      const lightData = await apiGet("/api/bootstrap?scope=light");
-      const normalized = { ...normalizeData(lightData), _fullLoaded: false };
+      const lightData = await apiGet("/api/bootstrap");
+      const normalized = normalizeData(lightData);
       confirmedDataRef.current = normalized;
       dataRef.current = normalized;
       setData(normalized);
       setSession(result.user);
       navigate("/dashboard/repairs");
-      loadFullBootstrapInBackground();
     }} />;
   }
 
@@ -1928,9 +1813,6 @@ export default function AppPage() {
         setRepairTopbarSave(null);
         setRepairDraft(null);
         await apiJson("/api/auth/logout", "POST", {});
-        fullBootstrapEpochRef.current += 1;
-        terminateFullBootstrapWorker();
-        fullBootstrapRequestRef.current = null;
         setSession(null);
         navigate("/login", { force: true });
       }} />
@@ -1945,7 +1827,6 @@ export default function AppPage() {
           <TopbarActions
             route={route}
             data={data}
-            saveData={saveData}
             saveRepairRecord={saveRepairRecord}
             deleteRepairRecord={deleteRepairRecord}
             navigate={navigate}
@@ -1959,7 +1840,6 @@ export default function AppPage() {
         <RouteView
           route={route}
           data={data}
-          saveData={saveData}
           saveClientRecord={saveClientRecord}
           deleteClientRecord={deleteClientRecord}
           saveRepairRecord={saveRepairRecord}
@@ -1989,7 +1869,7 @@ export default function AppPage() {
           openScanSearch={openGlobalScanDialog}
         />
       </main>
-      <ModalHost modal={modal} setModal={setModal} data={data} saveData={saveData} saveClientRecord={saveClientRecord} saveStaffRecord={saveStaffRecord} saveNonRepairResource={saveNonRepairResource} toast={showToast} lang={lang} t={t} />
+      <ModalHost modal={modal} setModal={setModal} data={data} saveClientRecord={saveClientRecord} saveStaffRecord={saveStaffRecord} saveNonRepairResource={saveNonRepairResource} toast={showToast} lang={lang} t={t} />
       <ScanSearchDialog
         open={scanSearchOpen}
         onOpenChange={(open) => {
@@ -2073,7 +1953,7 @@ function ThemeToggleButton({ theme, onThemeChange, t, compact = false, className
   );
 }
 
-function TopbarActions({ route, data, saveData, saveRepairRecord, deleteRepairRecord, navigate, repairDraft, repairTopbarSave, toast, lang, t }) {
+function TopbarActions({ route, data, saveRepairRecord, deleteRepairRecord, navigate, repairDraft, repairTopbarSave, toast, lang, t }) {
   const path = route.split("?")[0];
   const renderRepairSaveButton = () => repairTopbarSave ? (
     <Button
@@ -2365,7 +2245,7 @@ function permissionLabel(key, t) {
   return labels[key] || key;
 }
 
-function RepairsPage({ route, data, saveData, saveRepairRecord, navigate, filters, setFilters, toast, lang, t }) {
+function RepairsPage({ route, data, saveRepairRecord, navigate, filters, setFilters, toast, lang, t }) {
   const isMobileLayout = useMobileLayout();
   const clientLookup = useMemo(() => new Map((data.clients || []).map((client) => [client.id, client])), [data.clients]);
   // 行内编辑（状态/技师/明细）后的本地覆盖层：保存成功先盖住当页旧行，等服务端刷新到位后整体清空。
@@ -2980,7 +2860,7 @@ function ScanSearchDialog({ open, onOpenChange, query, setQuery, message, setMes
   );
 }
 
-function ClientsPage({ data, saveData, deleteClientRecord, filters, setFilters, setModal, toast, navigate, lang, t }) {
+function ClientsPage({ data, deleteClientRecord, filters, setFilters, setModal, toast, navigate, lang, t }) {
   // 服务端搜索/筛选/排序/分页 + 每客户维修统计，不再依赖内存全量 clients/repairs。
   const [committedSearch, setCommittedSearch] = useState(filters.clientsSearch || "");
   useEffect(() => {
@@ -3012,9 +2892,7 @@ function ClientsPage({ data, saveData, deleteClientRecord, filters, setFilters, 
   const remove = async (clientId) => {
     if (!confirm(t("confirmDeleteClient"))) return;
     // 「有维修记录不可删」由服务端 DELETE /api/clients 校验并返回错误提示。
-    const ok = deleteClientRecord
-      ? await deleteClientRecord(clientId)
-      : await saveData((current) => ({ ...current, clients: current.clients.filter((client) => client.id !== clientId) }));
+    const ok = await deleteClientRecord(clientId);
     if (!ok) return;
   };
   const openClientOrders = (clientId) => navigate(`/dashboard/clients/${encodeURIComponent(clientId)}`);
@@ -3180,11 +3058,11 @@ function ClientOrdersPage({ data, clientId, navigate, filters, setFilters, lang,
   );
 }
 
-function CategoriesPage({ data, saveData, saveNonRepairResource, filters, setFilters, currentBrandId, setCurrentBrandId, setModal, toast, t }) {
+function CategoriesPage({ data, saveNonRepairResource, filters, setFilters, currentBrandId, setCurrentBrandId, setModal, toast, t }) {
   const brands = sortCatalogRows(data.brands).filter((brand) => brand.name.toLowerCase().includes(filters.brandsSearch.toLowerCase()));
   const current = data.brands.find((brand) => brand.id === currentBrandId) || brands[0] || data.brands[0];
   const models = current ? sortCatalogRows(data.models.filter((model) => model.brandId === current.id)) : [];
-  const saveCatalog = (updater) => saveNonRepairResource ? saveNonRepairResource("catalog", updater) : saveData(updater);
+  const saveCatalog = (updater) => saveNonRepairResource("catalog", updater);
   const [draggingBrandId, setDraggingBrandId] = useState(null);
   const [draggingModelId, setDraggingModelId] = useState(null);
   const reorderBrands = (targetId) => {
@@ -3308,7 +3186,7 @@ function ProductsPage({ catalogTab, setCatalogTab, t, ...props }) {
   const addTopCategory = () => {
     const name = normalizeProductCategory(window.prompt(t("categoryName")));
     if (!name) return;
-    const saveCatalog = props.saveNonRepairResource ? (updater) => props.saveNonRepairResource("catalog", updater) : props.saveData;
+    const saveCatalog = (updater) => props.saveNonRepairResource("catalog", updater);
     saveCatalog((state) => {
       const current = productTopCategories(state.settings);
       if (current.includes(name)) return state;
@@ -3332,11 +3210,11 @@ function ProductsPage({ catalogTab, setCatalogTab, t, ...props }) {
   );
 }
 
-function CatalogPage({ data, saveData, saveNonRepairResource, filters, setFilters, setModal, type, lang, session, t, embedded = false }) {
+function CatalogPage({ data, saveNonRepairResource, filters, setFilters, setModal, type, lang, session, t, embedded = false }) {
   const customTopCategory = productTopCategoryFromTab(type);
   const isService = type !== "parts";
   const collectionKey = isService ? "services" : "parts";
-  const saveCatalog = (updater) => saveNonRepairResource ? saveNonRepairResource("catalog", updater) : saveData(updater);
+  const saveCatalog = (updater) => saveNonRepairResource("catalog", updater);
   const canManage = isService ? canAccessPage(session, "services") : canAccessPage(session, "modules");
   const [draggingItemId, setDraggingItemId] = useState(null);
   if (!canManage) return <section className="page"><Empty>{t("noPermission")}</Empty></section>;
@@ -3430,10 +3308,10 @@ function CatalogPage({ data, saveData, saveNonRepairResource, filters, setFilter
   return <section className="page">{content}</section>;
 }
 
-function AttributesPage({ data, saveData, saveNonRepairResource, filters, setFilters, setModal, lang, t }) {
+function AttributesPage({ data, saveNonRepairResource, filters, setFilters, setModal, lang, t }) {
   const rows = sortCatalogRows(data.attributes || []).filter((item) => [item.groupName, item.defaultName, item.zh, item.es].join(" ").toLowerCase().includes(filters.attributesSearch.toLowerCase()));
   const page = paginate(rows, filters.attributesPage);
-  const saveAttributes = (updater) => saveNonRepairResource ? saveNonRepairResource("attributes", updater) : saveData(updater);
+  const saveAttributes = (updater) => saveNonRepairResource("attributes", updater);
   const [draggingAttributeId, setDraggingAttributeId] = useState(null);
   const reorderAttributes = (targetId) => {
     if (!draggingAttributeId || draggingAttributeId === targetId) return;
@@ -3485,16 +3363,14 @@ function AttributesPage({ data, saveData, saveNonRepairResource, filters, setFil
   );
 }
 
-function StaffPage({ data, saveData, deleteStaffRecord, filters, setFilters, setModal, session, toast, t }) {
+function StaffPage({ data, deleteStaffRecord, filters, setFilters, setModal, session, toast, t }) {
   const rows = (data.users || []).filter((item) => [item.name, item.username, item.email].join(" ").toLowerCase().includes(filters.staffSearch.toLowerCase()));
   const page = paginate(rows, filters.staffPage);
   const remove = async (user) => {
     if (user.id === session?.id) return toast(t("currentUserCannotDelete"));
     if (user.isAdmin && data.users.filter((item) => item.isAdmin).length <= 1) return toast(t("lastAdminCannotDelete"));
     if (!confirm(t("confirmDeleteStaff"))) return;
-    const ok = deleteStaffRecord
-      ? await deleteStaffRecord(user.id)
-      : await saveData((value) => ({ ...value, users: value.users.filter((item) => item.id !== user.id) }));
+    const ok = await deleteStaffRecord(user.id);
     if (ok) toast(t("saved"));
   };
   return (
@@ -3521,7 +3397,7 @@ function StaffPage({ data, saveData, deleteStaffRecord, filters, setFilters, set
   );
 }
 
-function TechniciansPage({ data, saveData, saveNonRepairResource, filters, setFilters, setModal, toast, navigate, lang, t }) {
+function TechniciansPage({ data, saveNonRepairResource, filters, setFilters, setModal, toast, navigate, lang, t }) {
   const isMobileLayout = useMobileLayout();
   // 看板改服务端聚合（口径同旧 technicianDashboardRows），不再依赖内存全量 repairs。
   const [dashboard, setDashboard] = useState(null);
@@ -3541,7 +3417,7 @@ function TechniciansPage({ data, saveData, saveNonRepairResource, filters, setFi
   }));
   const rows = allRows.filter((row) => row.name.toLowerCase().includes(filters.techniciansSearch.toLowerCase()));
   const page = paginate(rows, filters.techniciansPage);
-  const saveTechnicians = (updater) => saveNonRepairResource ? saveNonRepairResource("technicians", updater) : saveData(updater);
+  const saveTechnicians = (updater) => saveNonRepairResource("technicians", updater);
   const remove = (technician) => {
     // 「已有维修单使用不可删」由服务端 syncTechniciansData 校验并返回错误提示。
     if (!confirm(t("confirmDeleteTechnician"))) return;
@@ -4282,7 +4158,7 @@ function BackupPage({ data, bootstrap, toast, t }) {
       setBusy(false);
     }
   };
-  const currentCounts = { clients: data.clients?.length || 0, repairs: data.repairs?.length || 0 };
+  const currentCounts = { clients: data._counts?.clients || 0, repairs: data._counts?.repairs || 0 };
   return (
     <section className="page">
       <div className="backup-grid">
@@ -4550,7 +4426,7 @@ function AttributeSelectionPanel({ value, onChange, items = [], lang = "zh", t }
   );
 }
 
-function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRecord, navigate, repairDraft, setRepairDraft, catalogTab, setCatalogTab, registerUnsavedGuard, registerRepairTopbar, repairId, route = "", toast, lang, t }) {
+function RepairForm({ data, session, saveRepairRecord, deleteRepairRecord, navigate, repairDraft, setRepairDraft, catalogTab, setCatalogTab, registerUnsavedGuard, registerRepairTopbar, repairId, route = "", toast, lang, t }) {
   const detailPath = route.split("?")[0] || "";
   const isWarrantyRoute = detailPath.startsWith("/dashboard/warranties");
   const existingFromData = null; // 详情一律按 id 从服务端读取，不再依赖内存全量
@@ -4879,13 +4755,13 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
   const saveRepair = async (draftOverride = null, options = {}) => {
     const explicitDraft = draftOverride && typeof draftOverride === "object" && !("nativeEvent" in draftOverride) && !("currentTarget" in draftOverride) ? draftOverride : null;
     const workingDraft = normalizeRepairDraft(explicitDraft || draftRef.current || draft);
-    const { clientId, clientToCreate } = resolveRepairClientForSave(workingDraft, data.clients);
-    if (data._fullLoaded === false && clientToCreate) {
-      return toast(t("loading"));
-    }
     if (repairRequiredFieldsMissing(workingDraft, data.clients)) {
       return toast(t("requiredRepairFields"));
     }
+    // 客户去重改为查服务端：手输姓名+电话若已有同名同号客户则复用，避免重复建档。
+    const resolved = await resolveRepairClientForSaveRemote(workingDraft);
+    if (resolved.failed) return toast(t("saveFailed"));
+    const { clientId, clientToCreate } = resolved;
     const payload = { ...workingDraft, clientId, publicToken: workingDraft.publicToken || publicToken };
     const isWarrantyOrder = (payload.orderType || "repair") === "warranty";
     if (isWarrantyOrder) {
@@ -4978,7 +4854,7 @@ function RepairForm({ data, session, saveData, saveRepairRecord, deleteRepairRec
     return <section className="page"><Empty>{t("loading")}</Empty></section>;
   }
   if (repairId && (!existing || (existing.itemsLoaded === false && remoteRepairMissing))) {
-    if (remoteRepairLoading || (data._fullLoaded === false && !remoteRepairMissing)) {
+    if (remoteRepairLoading) {
       return <section className="page"><Empty>{t("loading")}</Empty></section>;
     }
     return <section className="page"><Empty>{t("repairNotFound")}</Empty><Button onClick={() => navigate("/dashboard/repairs", { force: true })}>{t("repairs")}</Button></section>;
@@ -6216,19 +6092,19 @@ function PatternLock({ draft, setRepairDraft, t = makeT("zh") }) {
   );
 }
 
-function ModalHost({ modal, setModal, data, saveData, saveClientRecord, saveStaffRecord, saveNonRepairResource, toast, lang, t }) {
+function ModalHost({ modal, setModal, data, saveClientRecord, saveStaffRecord, saveNonRepairResource, toast, lang, t }) {
   if (!modal) return null;
   const title = modal.id ? t("edit") : t("add");
   return (
     <Dialog open={Boolean(modal)} onOpenChange={(open) => !open && setModal(null)} title={title}>
       <DialogBody>
-        <ModalForm key={`${modal.type}:${modal.id || "new"}:${modal.category || ""}`} modal={modal} data={data} saveData={saveData} saveClientRecord={saveClientRecord} saveStaffRecord={saveStaffRecord} saveNonRepairResource={saveNonRepairResource} close={() => setModal(null)} toast={toast} lang={lang} t={t} />
+        <ModalForm key={`${modal.type}:${modal.id || "new"}:${modal.category || ""}`} modal={modal} data={data} saveClientRecord={saveClientRecord} saveStaffRecord={saveStaffRecord} saveNonRepairResource={saveNonRepairResource} close={() => setModal(null)} toast={toast} lang={lang} t={t} />
       </DialogBody>
     </Dialog>
   );
 }
 
-function ModalForm({ modal, data, saveData, saveClientRecord, saveStaffRecord, saveNonRepairResource, close, toast, lang = "zh", t }) {
+function ModalForm({ modal, data, saveClientRecord, saveStaffRecord, saveNonRepairResource, close, toast, lang = "zh", t }) {
   const type = modal.type;
   const collection = type === "service" ? "services" : type === "part" ? "parts" : type === "staff" ? "users" : type === "attribute" ? "attributes" : type === "technician" ? "technicians" : `${type}s`;
   const current = modal.id ? data[collection]?.find((item) => item.id === modal.id) : {};
@@ -6294,7 +6170,7 @@ function ModalForm({ modal, data, saveData, saveClientRecord, saveStaffRecord, s
         if (type === "technician") return upsert(state, "technicians", modal.id, { id: modal.id || id(), name: form.name?.trim() || "", phone: form.phone || "", email: form.email || "", color: normalizeTechnicianColor(form.color), active: form.active !== false, sortOrder: form.sortOrder });
         return state;
       };
-      const ok = resource && saveNonRepairResource ? await saveNonRepairResource(resource, updater) : await saveData(updater);
+      const ok = resource ? await saveNonRepairResource(resource, updater) : false;
       if (!ok) return;
       close();
       toast(modal.id ? t("saved") : t("created"));
@@ -6513,15 +6389,6 @@ function scannedTicketValue(rawValue) {
   if (direct) return direct[0];
   const digits = value.replace(/[^\d]/g, "");
   return digits.length >= 8 ? digits : value;
-}
-
-function findRepairByTicket(repairs = [], rawValue = "") {
-  const candidates = scanCandidates(rawValue);
-  if (!candidates.length) return null;
-  return repairs.find((repair) => {
-    const values = [repair.ticket, repair.publicToken, repair.id].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
-    return candidates.some((candidate) => values.includes(candidate));
-  }) || null;
 }
 
 function scanCandidates(rawValue) {
@@ -6994,6 +6861,36 @@ function resolveRepairClientForSave(workingDraft, clients = []) {
   return { clientId, clientToCreate };
 }
 
+// 服务端版客户解析：clientId 已选直接用；否则按「姓名(不分大小写)+电话精确」查服务端去重。
+async function resolveRepairClientForSaveRemote(workingDraft) {
+  if (workingDraft.clientId) return { clientId: workingDraft.clientId, clientToCreate: null };
+  const clientName = formatClientName(workingDraft.clientName || "").trim();
+  const clientPhone = (workingDraft.phone || "").trim();
+  if (!clientName || !clientPhone) return { clientId: "", clientToCreate: null };
+  let existingClient = null;
+  try {
+    const result = await apiGet(`/api/clients/search?q=${encodeURIComponent(clientPhone)}&pageSize=20`);
+    existingClient = (result.rows || []).find((client) => String(client.name || "").toLowerCase() === clientName.toLowerCase() && client.phone === clientPhone) || null;
+  } catch {
+    return { failed: true };
+  }
+  const clientId = existingClient?.id || id();
+  return {
+    clientId,
+    clientToCreate: existingClient ? null : {
+      id: clientId,
+      name: clientName,
+      level: normalizeClientLevel(workingDraft.clientLevel),
+      docType: workingDraft.docType || "DNI",
+      identity: workingDraft.identity || "",
+      email: workingDraft.email || "",
+      phone: clientPhone,
+      address: workingDraft.address || "",
+      comment: ""
+    }
+  };
+}
+
 function repairRequiredFieldsMissing(workingDraft, clients = []) {
   const { clientId } = resolveRepairClientForSave(workingDraft, clients);
   return !clientId || !workingDraft.brand || !workingDraft.model;
@@ -7058,80 +6955,6 @@ function mergeNonRepairSaveResult(baseData, saved = {}) {
   next._revision = revisionFromSave(baseData._revision, saved);
   if (saved._settingsUpdatedAt) next._settingsUpdatedAt = saved._settingsUpdatedAt;
   return normalizeData(next);
-}
-
-function mergeFullBootstrap(current, full, startRevision = "") {
-  const revisionChanged = startRevision && (current._revision || "") !== startRevision;
-  if (revisionChanged) {
-    return { ...current, _fullLoaded: false };
-  }
-  const repairMap = new Map((full.repairs || []).map((repair) => [repair.id, repair]));
-  const clientMap = new Map((full.clients || []).map((client) => [client.id, client]));
-
-  for (const repair of current.repairs || []) {
-    const existing = repairMap.get(repair.id);
-    if (!existing) {
-      repairMap.set(repair.id, repair);
-      continue;
-    }
-    const currentTs = Date.parse(repair.updatedAt || repair.createdAt || "") || 0;
-    const fullTs = Date.parse(existing.updatedAt || existing.createdAt || "") || 0;
-    if (currentTs > fullTs) repairMap.set(repair.id, repair);
-  }
-
-  for (const client of current.clients || []) {
-    const existing = clientMap.get(client.id);
-    if (!existing) {
-      clientMap.set(client.id, client);
-      continue;
-    }
-    const currentTs = Date.parse(client.updatedAt || client.createdAt || "") || 0;
-    const fullTs = Date.parse(existing.updatedAt || existing.createdAt || "") || 0;
-    if (currentTs > fullTs) clientMap.set(client.id, client);
-  }
-
-  return {
-    ...current,
-    repairs: [...repairMap.values()],
-    clients: [...clientMap.values()],
-    _revision: full._revision || current._revision,
-    _fullLoaded: true
-  };
-}
-
-function overlayOptimisticSnapshot(confirmedBefore, merged, dataCurrent) {
-  const confirmedRepairIds = new Set((confirmedBefore.repairs || []).map((repair) => repair.id));
-  const confirmedClientIds = new Set((confirmedBefore.clients || []).map((client) => client.id));
-  const repairMap = new Map((merged.repairs || []).map((repair) => [repair.id, repair]));
-  const clientMap = new Map((merged.clients || []).map((client) => [client.id, client]));
-
-  for (const repair of dataCurrent.repairs || []) {
-    if (!confirmedRepairIds.has(repair.id)) {
-      repairMap.set(repair.id, repair);
-      continue;
-    }
-    const confirmedRepair = (confirmedBefore.repairs || []).find((item) => item.id === repair.id);
-    const currentTs = Date.parse(repair.updatedAt || repair.createdAt || "") || 0;
-    const confirmedTs = Date.parse(confirmedRepair?.updatedAt || confirmedRepair?.createdAt || "") || 0;
-    if (currentTs > confirmedTs) repairMap.set(repair.id, repair);
-  }
-
-  for (const client of dataCurrent.clients || []) {
-    if (!confirmedClientIds.has(client.id)) {
-      clientMap.set(client.id, client);
-      continue;
-    }
-    const confirmedClient = (confirmedBefore.clients || []).find((item) => item.id === client.id);
-    const currentTs = Date.parse(client.updatedAt || client.createdAt || "") || 0;
-    const confirmedTs = Date.parse(confirmedClient?.updatedAt || confirmedClient?.createdAt || "") || 0;
-    if (currentTs > confirmedTs) clientMap.set(client.id, client);
-  }
-
-  return {
-    ...merged,
-    repairs: [...repairMap.values()],
-    clients: [...clientMap.values()]
-  };
 }
 
 function normalizeRepairDraftFromRecord(repair) {
@@ -7598,19 +7421,6 @@ function trendLabel(date, granularity) {
   return dateOnly(date);
 }
 
-function repairMatchesTechnicianKey(repair, technicianKey, technicianById = new Map()) {
-  const technicianName = (repair.technicianName || "").trim();
-  const hasKnownTechnician = repair.technicianId && technicianById.has(repair.technicianId);
-  if (technicianKey === "unassigned") return !hasKnownTechnician && !technicianName;
-  if (technicianKey.startsWith("id:")) {
-    const technicianId = technicianKey.slice(3);
-    const technician = technicianById.get(technicianId);
-    return repair.technicianId === technicianId || Boolean(technician?.name && !hasKnownTechnician && technicianName.toLowerCase() === technician.name.toLowerCase());
-  }
-  if (technicianKey.startsWith("name:")) return !hasKnownTechnician && technicianName.toLowerCase() === technicianKey.slice(5).toLowerCase();
-  return false;
-}
-
 function isDeletableHistoricalTechnicianRow(row, t = makeT("zh")) {
   if (!row || row.technician || !String(row.id || "").startsWith("name:")) return false;
   return row.name === t("historicalTechnician") || row.id === "name:历史";
@@ -7635,137 +7445,6 @@ function repairTechnicianLabel(repair, technicianById = new Map(), technicianByN
 
 function isHistoricalAmountRepair() {
   return false;
-}
-
-function technicianSummaryRows(repairs = [], technicians = [], t = makeT("zh")) {
-  const rows = new Map();
-  const technicianById = new Map((technicians || []).map((technician) => [technician.id, technician]));
-  const technicianByName = technicianNameLookup(technicians);
-  const makeRow = (id, name, isUnassigned = false) => ({
-    id,
-    name,
-    isUnassigned,
-    orderCount: 0,
-    repairCount: 0,
-    warrantyCount: 0,
-    amount: 0,
-    cost: 0,
-    profit: 0
-  });
-  const ensureRow = (repair) => {
-    const technician = technicianById.get(repair.technicianId);
-    if (technician) {
-      const key = `id:${technician.id}`;
-      if (!rows.has(key)) rows.set(key, makeRow(key, technician.name || t("technician")));
-      return rows.get(key);
-    }
-    const legacyName = String(repair.technicianName || "").trim();
-    const namedTechnician = technicianByName.get(legacyName.toLowerCase());
-    if (namedTechnician) {
-      const key = `id:${namedTechnician.id}`;
-      if (!rows.has(key)) rows.set(key, makeRow(key, namedTechnician.name || t("technician")));
-      return rows.get(key);
-    }
-    if (legacyName) {
-      const key = `name:${legacyName}`;
-      if (!rows.has(key)) rows.set(key, makeRow(key, legacyName));
-      return rows.get(key);
-    }
-    const key = "unassigned";
-    if (!rows.has(key)) rows.set(key, makeRow(key, t("unassignedTechnician"), true));
-    return rows.get(key);
-  };
-  for (const repair of repairs) {
-    if (isCanceledRepair(repair)) continue;
-    const row = ensureRow(repair);
-    const skipAmount = isHistoricalAmountRepair(repair, technicianById, technicianByName);
-    const amount = skipAmount ? 0 : chargeAmount(repair);
-    const cost = skipAmount ? 0 : repairCostAmount(repair);
-    row.orderCount += 1;
-    if ((repair.orderType || "repair") === "warranty") row.warrantyCount += 1;
-    else row.repairCount += 1;
-    row.amount += amount;
-    row.cost += cost;
-    row.profit += amount - cost;
-  }
-  return [...rows.values()]
-    .filter((row) => row.orderCount)
-    .sort((a, b) => Number(a.isUnassigned) - Number(b.isUnassigned) || b.profit - a.profit || b.amount - a.amount || b.orderCount - a.orderCount || a.name.localeCompare(b.name));
-}
-
-function technicianDashboardRows(data, t = makeT("zh"), selectedDate = "") {
-  const rows = new Map();
-  const technicians = data.technicians || [];
-  const technicianById = new Map(technicians.map((technician) => [technician.id, technician]));
-  const technicianByName = technicianNameLookup(technicians);
-  const dateFilter = String(selectedDate || "").slice(0, 10);
-  const makeRow = (key, name, technician = null, isUnassigned = false) => ({
-    id: key,
-    name,
-    technician,
-    isUnassigned,
-    repairCount: 0,
-    warrantyCount: 0,
-    recordCount: 0,
-    openCount: 0,
-    repairAmount: 0,
-    repairProfit: 0,
-    warrantyLoss: 0,
-    latestRepair: null
-  });
-  for (const technician of technicians) {
-    rows.set(`id:${technician.id}`, makeRow(`id:${technician.id}`, technician.name || t("technician"), technician));
-  }
-  const ensureRow = (repair) => {
-    const technician = technicianById.get(repair.technicianId);
-    if (technician) {
-      const key = `id:${technician.id}`;
-      if (!rows.has(key)) rows.set(key, makeRow(key, technician.name || t("technician"), technician));
-      return rows.get(key);
-    }
-    const legacyName = (repair.technicianName || "").trim();
-    const namedTechnician = technicianByName.get(legacyName.toLowerCase());
-    if (namedTechnician) {
-      const key = `id:${namedTechnician.id}`;
-      if (!rows.has(key)) rows.set(key, makeRow(key, namedTechnician.name || t("technician"), namedTechnician));
-      return rows.get(key);
-    }
-    if (legacyName) {
-      const key = `name:${legacyName}`;
-      if (!rows.has(key)) rows.set(key, makeRow(key, legacyName));
-      return rows.get(key);
-    }
-    const key = "unassigned";
-    if (!rows.has(key)) rows.set(key, makeRow(key, t("unassignedTechnician"), null, true));
-    return rows.get(key);
-  };
-  for (const repair of data.repairs || []) {
-    const status = normalizeStatus(repair.status);
-    const repairDate = String(repair.repairTime || "").slice(0, 10);
-    if (status === "取消" || (dateFilter && repairDate !== dateFilter)) continue;
-    const row = ensureRow(repair);
-    const isWarranty = (repair.orderType || "repair") === "warranty";
-    const skipAmount = isHistoricalAmountRepair(repair, technicianById, technicianByName);
-    const amount = skipAmount || isWarranty && !repair.warrantyChargeable ? 0 : chargeAmount(repair);
-    const cost = skipAmount ? 0 : repairCostAmount(repair);
-    const profit = amount - cost;
-    row.recordCount += 1;
-    if (!row.latestRepair || String(repair.repairTime || repair.ticket || "").localeCompare(String(row.latestRepair.repairTime || row.latestRepair.ticket || "")) > 0) {
-      row.latestRepair = repair;
-    }
-    if (isWarranty) {
-      row.warrantyCount += 1;
-      row.warrantyLoss += Math.max(0, cost - amount);
-    } else {
-      row.repairCount += 1;
-      row.repairAmount += amount;
-      row.repairProfit += profit;
-    }
-    if (!isLockingFinalStatus(status)) row.openCount += 1;
-  }
-  return [...rows.values()]
-    .filter((row) => row.technician || row.repairCount || row.warrantyCount || row.openCount)
-    .sort((a, b) => Number(a.isUnassigned) - Number(b.isUnassigned) || b.repairProfit - a.repairProfit || b.repairAmount - a.repairAmount || b.repairCount - a.repairCount || a.name.localeCompare(b.name));
 }
 
 function technicianStats(repairs, technicians, amountFn, costFn = () => 0, t = makeT("zh")) {
