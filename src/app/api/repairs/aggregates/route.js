@@ -10,7 +10,10 @@ export async function GET(request) {
       status: params.get("status") || "",
       orderType: params.get("orderType") || "",
       start: params.get("start") || "",
-      end: params.get("end") || ""
+      end: params.get("end") || "",
+      clientId: params.get("clientId") || "",
+      sourceRepairId: params.get("sourceRepairId") || "",
+      technicianKey: params.get("technicianKey") || ""
     });
     return Response.json(result);
   } catch (error) {

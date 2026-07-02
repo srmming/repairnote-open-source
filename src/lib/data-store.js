@@ -183,6 +183,100 @@ export async function searchRepairs(params = {}) {
   };
 }
 
+// 客户列表页：服务端搜索 + 每客户维修统计（总数/未完结数/最近一单）+ 排序 + 分页。
+// 口径与前端 ClientsPage 一致：未完结 = 状态归一后不是「已取走/取消」；
+// 最近一单按 (repairTime 为空则回退 ticket) 字符串降序。
+const OPEN_EXCLUDED_STATUSES = ["已取走", "Entregado", "取消", "Cerrado", "Cancelar", "关闭", "拒保"];
+
+export async function searchClients(params = {}) {
+  const q = String(params.q || "").trim().toLowerCase();
+  const filter = String(params.filter || "all");
+  const sort = String(params.sort || "latest");
+  const page = Math.max(1, Number(params.page) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20));
+
+  const conds = [Prisma.sql`1 = 1`];
+  if (q) conds.push(Prisma.sql`LOWER(CONCAT_WS(' ', c.name, c.identity, c.email, c.phone, c.address)) LIKE ${`%${q}%`}`);
+  if (filter === "open") conds.push(Prisma.sql`COALESCE(s.openTotal, 0) > 0`);
+  if (filter === "records") conds.push(Prisma.sql`COALESCE(s.repairTotal, 0) > 0`);
+  if (filter === "no-records") conds.push(Prisma.sql`COALESCE(s.repairTotal, 0) = 0`);
+  const whereSql = Prisma.join(conds, " AND ");
+
+  const orderSql = sort === "records"
+    ? Prisma.sql`COALESCE(s.repairTotal, 0) DESC, c.name ASC`
+    : sort === "open"
+      ? Prisma.sql`COALESCE(s.openTotal, 0) DESC, COALESCE(s.repairTotal, 0) DESC, c.name ASC`
+      : sort === "name"
+        ? Prisma.sql`c.name ASC`
+        : Prisma.sql`COALESCE(s.latestSortKey, '') DESC, COALESCE(s.repairTotal, 0) DESC, c.name ASC`;
+
+  const statsSql = Prisma.sql`
+    SELECT clientId,
+           COUNT(*) AS repairTotal,
+           COALESCE(SUM(status NOT IN (${Prisma.join(OPEN_EXCLUDED_STATUSES)})), 0) AS openTotal,
+           MAX(CASE WHEN COALESCE(repairTime, '') <> '' THEN repairTime ELSE ticket END) AS latestSortKey
+    FROM Repair GROUP BY clientId
+  `;
+
+  const [countRows, rows] = await Promise.all([
+    prisma.$queryRaw(Prisma.sql`
+      SELECT COUNT(*) AS total FROM Client c LEFT JOIN (${statsSql}) s ON s.clientId = c.id WHERE ${whereSql}
+    `),
+    prisma.$queryRaw(Prisma.sql`
+      SELECT c.id, c.name, c.docType, c.identity, c.email, c.phone, c.address, c.comment, c.level,
+             COALESCE(s.repairTotal, 0) AS repairTotal, COALESCE(s.openTotal, 0) AS openTotal
+      FROM Client c LEFT JOIN (${statsSql}) s ON s.clientId = c.id
+      WHERE ${whereSql} ORDER BY ${orderSql}
+      LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
+    `)
+  ]);
+
+  // 当页客户的「最近一单」：窗口函数按每客户取第一条，只查当页涉及的客户。
+  const clientIds = rows.map((row) => row.id);
+  const latestRows = clientIds.length
+    ? await prisma.$queryRaw(Prisma.sql`
+        SELECT id, clientId, ticket, brand, model, status, repairTime FROM (
+          SELECT r.id, r.clientId, r.ticket, r.brand, r.model, r.status, r.repairTime,
+                 ROW_NUMBER() OVER (PARTITION BY r.clientId ORDER BY (CASE WHEN COALESCE(r.repairTime, '') <> '' THEN r.repairTime ELSE r.ticket END) DESC) AS rowNo
+          FROM Repair r WHERE r.clientId IN (${Prisma.join(clientIds)})
+        ) ranked WHERE rowNo = 1
+      `)
+    : [];
+  const latestByClient = new Map(latestRows.map((row) => [row.clientId, row]));
+
+  return {
+    rows: rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      docType: row.docType,
+      identity: row.identity,
+      email: row.email,
+      phone: row.phone,
+      address: row.address,
+      comment: row.comment,
+      level: row.level,
+      stats: {
+        total: Number(row.repairTotal || 0),
+        open: Number(row.openTotal || 0),
+        latest: latestByClient.get(row.id) || null
+      }
+    })),
+    total: Number(countRows[0]?.total || 0),
+    page,
+    pageSize
+  };
+}
+
+// 删除某个「历史维修师」（不在册、仅按姓名记录）名下的全部维修单。
+// 只允许 name: 前缀的历史桶，避免误删在册技师的单。
+export async function deleteTechnicianHistory(technicianKey) {
+  const key = String(technicianKey || "").trim();
+  if (!key.startsWith("name:")) throwBadRequest("只能删除历史维修师的记录");
+  const where = await technicianKeyFilter(key);
+  const result = await prisma.repair.deleteMany({ where });
+  return { ok: true, deleted: result.count, _revisionPatch: await getRevisionPatch(["repairs"]) };
+}
+
 // 扫码/快速开单：候选值（原文、票号数字、URL 片段）精确匹配 ticket / publicToken / id，
 // 全部走唯一索引；口径与前端 findRepairByTicket/scanCandidates 一致。
 export async function lookupRepairByScan(rawValue) {
@@ -257,11 +351,17 @@ export async function aggregateRepairs(params = {}) {
   const orderType = String(params.orderType || "").trim();
   const start = String(params.start || "").trim();
   const end = String(params.end || "").trim();
+  const clientId = String(params.clientId || "").trim();
+  const sourceRepairId = String(params.sourceRepairId || "").trim();
+  const technicianKey = String(params.technicianKey || "").trim();
 
   const conds = [Prisma.sql`1 = 1`];
   if (q) conds.push(Prisma.sql`r.searchText LIKE ${`%${q}%`}`);
   if (status) conds.push(Prisma.sql`r.status = ${status}`);
   if (orderType) conds.push(Prisma.sql`r.orderType = ${orderType}`);
+  if (clientId) conds.push(Prisma.sql`r.clientId = ${clientId}`);
+  if (sourceRepairId) conds.push(Prisma.sql`r.sourceRepairId = ${sourceRepairId}`);
+  if (technicianKey) conds.push(await technicianKeyRawSql(technicianKey));
   if (start) conds.push(Prisma.sql`r.repairTime >= ${start}`);
   if (end) conds.push(Prisma.sql`r.repairTime <= ${`${end}~`}`);
   const whereSql = Prisma.join(conds, " AND ");
@@ -293,7 +393,31 @@ export async function aggregateRepairs(params = {}) {
     technicianId: row.technicianId,
     technicianName: row.technicianName
   }));
-  return computeListAggregates(lite, technicians);
+  // businessCount / openCount：客户订单页与技师订单页的「单数 / 未完结」指标，
+  // 口径同前端（非取消；未完结 = 归一后不是已取走/取消）。
+  const businessCount = lite.filter((row) => normalizeStatus(row.status) !== "取消").length;
+  const openCount = lite.filter((row) => !["已取走", "取消"].includes(normalizeStatus(row.status))).length;
+  return { ...computeListAggregates(lite, technicians), businessCount, openCount };
+}
+
+// technicianKey 的原生 SQL 版本（口径同 technicianKeyFilter / 前端 repairMatchesTechnicianKey）。
+async function technicianKeyRawSql(technicianKey) {
+  const technicians = await prisma.technician.findMany({ select: { id: true, name: true } });
+  const knownIds = technicians.map((technician) => technician.id);
+  const notKnown = knownIds.length
+    ? Prisma.sql`(r.technicianId = '' OR r.technicianId NOT IN (${Prisma.join(knownIds)}))`
+    : Prisma.sql`1 = 1`;
+  if (technicianKey === "unassigned") return Prisma.sql`(${notKnown} AND r.technicianName = '')`;
+  if (technicianKey.startsWith("id:")) {
+    const technicianId = technicianKey.slice(3);
+    const technician = technicians.find((row) => row.id === technicianId);
+    if (!technician?.name) return Prisma.sql`r.technicianId = ${technicianId}`;
+    return Prisma.sql`(r.technicianId = ${technicianId} OR (${notKnown} AND r.technicianName = ${technician.name}))`;
+  }
+  if (technicianKey.startsWith("name:")) {
+    return Prisma.sql`(${notKnown} AND r.technicianName = ${technicianKey.slice(5)})`;
+  }
+  return Prisma.sql`1 = 0`;
 }
 
 async function repairItemTotals() {
@@ -958,6 +1082,18 @@ export async function syncCatalogData(data = {}) {
   let settingsUpdatedAt = "";
 
   await prisma.$transaction(async (tx) => {
+    // 服务端强制：要删除的型号若已有维修单使用（品牌不区分大小写、型号精确匹配，与前端口径一致），拒绝删除。
+    const nextModelIds = new Set(models.map((row) => row.id));
+    const existingModels = await tx.model.findMany({ include: { brand: { select: { name: true } } } });
+    for (const model of existingModels) {
+      if (nextModelIds.has(model.id)) continue;
+      const used = await tx.$queryRaw(Prisma.sql`
+        SELECT COUNT(*) AS total FROM Repair
+        WHERE LOWER(brand) = ${String(model.brand?.name || "").toLowerCase()}
+          AND model COLLATE utf8mb4_bin = ${model.name}
+      `);
+      if (Number(used[0]?.total || 0) > 0) throwBadRequest("该型号已有维修单，不能直接删除");
+    }
     await deleteMissingRows(tx.model, models);
     await deleteMissingRows(tx.brand, brands);
     await syncTableRows(tx.brand, brands, ["name", "sortOrder"], { deleteMissing: false });

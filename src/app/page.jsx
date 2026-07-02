@@ -2981,61 +2981,43 @@ function ScanSearchDialog({ open, onOpenChange, query, setQuery, message, setMes
 }
 
 function ClientsPage({ data, saveData, deleteClientRecord, filters, setFilters, setModal, toast, navigate, lang, t }) {
-  const clientRepairsById = useMemo(() => {
-    const map = new Map((data.clients || []).map((client) => [client.id, []]));
-    for (const repair of data.repairs || []) {
-      if (!repair.clientId) continue;
-      if (!map.has(repair.clientId)) map.set(repair.clientId, []);
-      map.get(repair.clientId).push(repair);
-    }
-    for (const repairs of map.values()) {
-      repairs.sort((a, b) => String(b.repairTime || b.ticket || "").localeCompare(String(a.repairTime || a.ticket || "")));
-    }
-    return map;
-  }, [data.clients, data.repairs]);
-  const clientStats = (clientId) => {
-    const repairs = clientRepairsById.get(clientId) || [];
-    return {
-      total: repairs.length,
-      open: repairs.filter((repair) => !isLockingFinalStatus(repair.status)).length,
-      latest: repairs[0]
-    };
+  // 服务端搜索/筛选/排序/分页 + 每客户维修统计，不再依赖内存全量 clients/repairs。
+  const [committedSearch, setCommittedSearch] = useState(filters.clientsSearch || "");
+  useEffect(() => {
+    const handle = setTimeout(() => setCommittedSearch(filters.clientsSearch || ""), 250);
+    return () => clearTimeout(handle);
+  }, [filters.clientsSearch]);
+  const [serverClients, setServerClients] = useState({ rows: [], total: 0, loading: true });
+  useEffect(() => {
+    let active = true;
+    setServerClients((prev) => ({ ...prev, loading: true }));
+    const params = new URLSearchParams({
+      q: committedSearch,
+      filter: filters.clientsFilter || "all",
+      sort: filters.clientsSort || "latest",
+      page: String(filters.clientsPage || 1),
+      pageSize: "20"
+    });
+    apiGet(`/api/clients/search?${params.toString()}`)
+      .then((res) => { if (active) setServerClients({ rows: res.rows || [], total: res.total || 0, loading: false }); })
+      .catch(() => { if (active) setServerClients({ rows: [], total: 0, loading: false }); });
+    return () => { active = false; };
+  }, [committedSearch, filters.clientsFilter, filters.clientsSort, filters.clientsPage, data._revision]);
+  const page = {
+    current: filters.clientsPage || 1,
+    total: serverClients.total,
+    totalPages: Math.max(1, Math.ceil(serverClients.total / 20)),
+    items: serverClients.rows
   };
-  const rows = useMemo(() => {
-    const search = filters.clientsSearch.toLowerCase();
-    const filtered = (data.clients || []).filter((client) => {
-      const stats = clientStats(client.id);
-      const matchesSearch = [client.name, client.identity, client.email, client.phone, client.address].join(" ").toLowerCase().includes(search);
-      const matchesFilter = filters.clientsFilter === "open"
-        ? stats.open > 0
-        : filters.clientsFilter === "records"
-          ? stats.total > 0
-          : filters.clientsFilter === "no-records"
-            ? stats.total === 0
-            : true;
-      return matchesSearch && matchesFilter;
-    });
-    return filtered.sort((a, b) => {
-      const aStats = clientStats(a.id);
-      const bStats = clientStats(b.id);
-      if (filters.clientsSort === "records") return bStats.total - aStats.total || String(a.name || "").localeCompare(String(b.name || ""));
-      if (filters.clientsSort === "open") return bStats.open - aStats.open || bStats.total - aStats.total || String(a.name || "").localeCompare(String(b.name || ""));
-      if (filters.clientsSort === "name") return String(a.name || "").localeCompare(String(b.name || ""));
-      return String(bStats.latest?.repairTime || bStats.latest?.ticket || "").localeCompare(String(aStats.latest?.repairTime || aStats.latest?.ticket || "")) || bStats.total - aStats.total || String(a.name || "").localeCompare(String(b.name || ""));
-    });
-  }, [data.clients, filters.clientsFilter, filters.clientsSearch, filters.clientsSort, clientRepairsById]);
-  const page = paginate(rows, filters.clientsPage, 20);
   const remove = async (clientId) => {
-    if (data._fullLoaded === false) return toast(t("loading"));
-    if (data.repairs.some((repair) => repair.clientId === clientId)) return toast(t("cannotDeleteClient"));
     if (!confirm(t("confirmDeleteClient"))) return;
+    // 「有维修记录不可删」由服务端 DELETE /api/clients 校验并返回错误提示。
     const ok = deleteClientRecord
       ? await deleteClientRecord(clientId)
       : await saveData((current) => ({ ...current, clients: current.clients.filter((client) => client.id !== clientId) }));
     if (!ok) return;
   };
   const openClientOrders = (clientId) => navigate(`/dashboard/clients/${encodeURIComponent(clientId)}`);
-  if (data._fullLoaded === false) return <section className="page"><Empty>{t("loading")}</Empty></section>;
   return (
     <section className="page">
       <Toolbar className="clients-toolbar">
@@ -3060,7 +3042,7 @@ function ClientsPage({ data, saveData, deleteClientRecord, filters, setFilters, 
         <Table className="clients-table">
           <TableHeader><TableRow><TableHead>{t("clientName")}</TableHead><TableHead>{t("phone")}</TableHead><TableHead>{t("repairRecords")}</TableHead><TableHead>{t("latestRepair")}</TableHead><TableHead>{t("identity")}</TableHead><TableHead>{t("email")}</TableHead><TableHead>{t("address")}</TableHead><TableHead>{t("operation")}</TableHead></TableRow></TableHeader>
           <TableBody>{page.items.length ? page.items.map((client) => {
-            const stats = clientStats(client.id);
+            const stats = client.stats || { total: 0, open: 0, latest: null };
             return (
                 <TableRow key={client.id} className="row-click client-row" onClick={() => openClientOrders(client.id)}>
                   <TableCell data-label={t("clientName")}>
@@ -3090,31 +3072,49 @@ function ClientsPage({ data, saveData, deleteClientRecord, filters, setFilters, 
 }
 
 function ClientOrdersPage({ data, clientId, navigate, filters, setFilters, lang, t }) {
-  const client = (data.clients || []).find((item) => item.id === clientId);
-  const technicianById = useMemo(() => new Map((data.technicians || []).map((technician) => [technician.id, technician])), [data.technicians]);
-  const technicianByName = useMemo(() => technicianNameLookup(data.technicians || []), [data.technicians]);
-  if (data._fullLoaded === false) return <section className="page"><Empty>{t("loading")}</Empty></section>;
   const startDate = filters.clientOrdersStartDate || "";
   const endDate = filters.clientOrdersEndDate || "";
-  const orders = (data.repairs || [])
-    .filter((repair) => repair.clientId === clientId)
-    .sort((a, b) => String(b.repairTime || b.ticket || "").localeCompare(String(a.repairTime || a.ticket || "")));
-  const filteredOrders = orders.filter((repair) => {
-    const day = String(repair.repairTime || "").slice(0, 10);
-    return (!startDate || day >= startDate) && (!endDate || day <= endDate);
-  });
-  const page = paginate(filteredOrders, filters.clientOrdersPage);
-  const businessFilteredOrders = filteredOrders.filter((repair) => !isCanceledRepair(repair));
-  const totals = businessFilteredOrders.reduce((sum, repair) => {
-    const skipAmount = isHistoricalAmountRepair(repair, technicianById, technicianByName);
-    const amount = skipAmount ? 0 : chargeAmount(repair);
-    const cost = skipAmount ? 0 : repairCostAmount(repair);
-    return {
-      amount: sum.amount + amount,
-      profit: sum.profit + amount - cost,
-      open: sum.open + (isLockingFinalStatus(repair.status) ? 0 : 1)
-    };
-  }, { amount: 0, profit: 0, open: 0 });
+  // 服务端分页 + 聚合：不再依赖内存全量 repairs/clients。
+  const [serverOrders, setServerOrders] = useState({ rows: [], total: 0, allTotal: 0, loading: true });
+  useEffect(() => {
+    let active = true;
+    setServerOrders((prev) => ({ ...prev, loading: true }));
+    const params = new URLSearchParams({ clientId, page: String(filters.clientOrdersPage || 1) });
+    if (startDate) params.set("start", startDate);
+    if (endDate) params.set("end", endDate);
+    const allParams = new URLSearchParams({ clientId, pageSize: "1" });
+    Promise.all([
+      apiGet(`/api/repairs/search?${params.toString()}`),
+      (startDate || endDate) ? apiGet(`/api/repairs/search?${allParams.toString()}`) : Promise.resolve(null)
+    ])
+      .then(([res, allRes]) => {
+        if (!active) return;
+        setServerOrders({ rows: res.rows || [], total: res.total || 0, allTotal: allRes ? allRes.total || 0 : res.total || 0, loading: false });
+      })
+      .catch(() => { if (active) setServerOrders({ rows: [], total: 0, allTotal: 0, loading: false }); });
+    return () => { active = false; };
+  }, [clientId, startDate, endDate, filters.clientOrdersPage, data._revision]);
+  const [serverTotals, setServerTotals] = useState({ amount: 0, cost: 0, profit: 0, businessCount: 0, openCount: 0 });
+  useEffect(() => {
+    let active = true;
+    const params = new URLSearchParams({ clientId });
+    if (startDate) params.set("start", startDate);
+    if (endDate) params.set("end", endDate);
+    apiGet(`/api/repairs/aggregates?${params.toString()}`)
+      .then((res) => { if (active) setServerTotals({ amount: res.totals?.amount || 0, cost: res.totals?.cost || 0, profit: res.totals?.profit || 0, businessCount: res.businessCount || 0, openCount: res.openCount || 0 }); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [clientId, startDate, endDate, data._revision]);
+  const page = {
+    current: filters.clientOrdersPage || 1,
+    total: serverOrders.total,
+    totalPages: Math.max(1, Math.ceil(serverOrders.total / PAGE_SIZE)),
+    items: serverOrders.rows
+  };
+  const client = serverOrders.rows[0]
+    ? { name: serverOrders.rows[0].clientName || "", phone: serverOrders.rows[0].clientPhone || "" }
+    : null;
+  const totals = { amount: serverTotals.amount, profit: serverTotals.profit, open: serverTotals.openCount };
   const updateDate = (key, value) => {
     const next = { ...filters, [key]: value, clientOrdersPage: 1 };
     if (key === "clientOrdersStartDate" && next.clientOrdersEndDate && value > next.clientOrdersEndDate) next.clientOrdersEndDate = value;
@@ -3128,7 +3128,7 @@ function ClientOrdersPage({ data, clientId, navigate, filters, setFilters, lang,
         <Button variant="outline" onClick={() => navigate("/dashboard/clients")}><ChevronLeft {...ICON_SM} /> {t("backToClients")}</Button>
         <div className="technician-orders-title">
           <b>{client?.name || t("clientOrders")}</b>
-          <span>{filteredOrders.length} {t("orders")} / {orders.length} {t("orders")}</span>
+          <span>{serverOrders.total} {t("orders")} / {serverOrders.allTotal} {t("orders")}</span>
         </div>
         <DateRangeFilter
           lang={lang}
@@ -3144,7 +3144,7 @@ function ClientOrdersPage({ data, clientId, navigate, filters, setFilters, lang,
         <Pagination page={page} pageKey="clientOrdersPage" filters={filters} setFilters={setFilters} t={t} />
       </Toolbar>
       <div className="metric-grid technician-orders-summary-grid">
-        <Metric title={t("orderCount")} value={businessFilteredOrders.length} />
+        <Metric title={t("orderCount")} value={serverTotals.businessCount} />
         <Metric title={t("technicianOpenOrders")} value={totals.open} />
         <Metric title={t("repairAmount")} value={money(totals.amount)} />
         <Metric title={t("profitAmount")} value={money(totals.profit)} />
@@ -3275,8 +3275,7 @@ function CategoriesPage({ data, saveData, saveNonRepairResource, filters, setFil
                         <Button size="sm" variant="outline" onClick={() => saveCatalog((value) => ({ ...value, models: moveSortedRow(value.models || [], model.id, 1, (row) => row.brandId === current.id) }))}><ChevronDown {...ICON_SM} /></Button>{" "}
                         <Button size="sm" variant="outline" onClick={() => setModal({ type: "model", id: model.id, brandId: current.id })}><Pencil {...ICON_SM} /> {t("edit")}</Button>{" "}
                         <Button size="sm" variant="danger" onClick={() => {
-                          if (data._fullLoaded === false) return toast(t("loading"));
-                          if (data.repairs.some((repair) => (repair.brand || "").toLowerCase() === current.name.toLowerCase() && repair.model === model.name)) return toast(t("cannotDeleteModel"));
+                          // 「型号已有维修单不可删」由服务端 syncCatalogData 校验并返回错误提示。
                           if (!confirm(t("confirmDeleteModel"))) return;
                           saveCatalog((value) => ({ ...value, models: value.models.filter((item) => item.id !== model.id) }));
                         }}><Trash2 {...ICON_SM} /> {t("delete")}</Button>
@@ -3524,30 +3523,42 @@ function StaffPage({ data, saveData, deleteStaffRecord, filters, setFilters, set
 
 function TechniciansPage({ data, saveData, saveNonRepairResource, filters, setFilters, setModal, toast, navigate, lang, t }) {
   const isMobileLayout = useMobileLayout();
-  if (data._fullLoaded === false) return <section className="page"><Empty>{t("loading")}</Empty></section>;
-  const allRows = technicianDashboardRows(data, t);
+  // 看板改服务端聚合（口径同旧 technicianDashboardRows），不再依赖内存全量 repairs。
+  const [dashboard, setDashboard] = useState(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+  useEffect(() => {
+    let active = true;
+    apiGet("/api/technicians/dashboard")
+      .then((res) => { if (active) setDashboard(res.rows || []); })
+      .catch(() => { if (active) setDashboard([]); });
+    return () => { active = false; };
+  }, [data._revision, refreshTick]);
+  const technicianById = useMemo(() => new Map((data.technicians || []).map((technician) => [technician.id, technician])), [data.technicians]);
+  const allRows = (dashboard || []).map((row) => ({
+    ...row,
+    technician: row.technician ? technicianById.get(row.technician.id) || row.technician : null,
+    name: row.name || (row.isUnassigned ? t("unassignedTechnician") : t("technician"))
+  }));
   const rows = allRows.filter((row) => row.name.toLowerCase().includes(filters.techniciansSearch.toLowerCase()));
   const page = paginate(rows, filters.techniciansPage);
   const saveTechnicians = (updater) => saveNonRepairResource ? saveNonRepairResource("technicians", updater) : saveData(updater);
   const remove = (technician) => {
-    if (data._fullLoaded === false) return toast(t("loading"));
-    const isUsed = data.repairs.some((repair) => repair.technicianId === technician.id || (technician.name && repair.technicianName === technician.name));
-    if (isUsed) return toast(t("cannotDeleteTechnician"));
+    // 「已有维修单使用不可删」由服务端 syncTechniciansData 校验并返回错误提示。
     if (!confirm(t("confirmDeleteTechnician"))) return;
     saveTechnicians((value) => ({ ...value, technicians: (value.technicians || []).filter((item) => item.id !== technician.id) }));
   };
   const removeHistoricalRecords = async (row) => {
     if (!isDeletableHistoricalTechnicianRow(row, t)) return;
     if (!confirm(t("confirmDeleteHistoricalRecords"))) return;
-    const ok = await saveData((value) => {
-      const valueTechnicianById = new Map((value.technicians || []).map((technician) => [technician.id, technician]));
-      return {
-        ...value,
-        repairs: (value.repairs || []).filter((repair) => !repairMatchesTechnicianKey(repair, row.id, valueTechnicianById))
-      };
-    });
-    if (ok) toast(t("historicalRecordsDeleted"));
+    try {
+      await apiJson("/api/technicians/history", "DELETE", { key: row.id });
+      setRefreshTick((tick) => tick + 1);
+      toast(t("historicalRecordsDeleted"));
+    } catch (error) {
+      toast(error.message || t("saveFailed"));
+    }
   };
+  if (!dashboard) return <section className="page"><Empty>{t("loading")}</Empty></section>;
   return (
     <section className="page technicians-page">
       <Toolbar className="technicians-toolbar">
@@ -3598,37 +3609,52 @@ function TechniciansPage({ data, saveData, saveNonRepairResource, filters, setFi
 
 function TechnicianOrdersPage({ data, technicianKey, navigate, filters, setFilters, lang, t }) {
   const isMobileLayout = useMobileLayout();
-  if (data._fullLoaded === false) return <section className="page"><Empty>{t("loading")}</Empty></section>;
   const decodedKey = technicianKey || "";
   const technicians = data.technicians || [];
   const technicianById = new Map(technicians.map((technician) => [technician.id, technician]));
-  const technicianByName = technicianNameLookup(technicians);
   const technician = decodedKey.startsWith("id:") ? technicianById.get(decodedKey.slice(3)) : null;
   const legacyName = decodedKey.startsWith("name:") ? decodedKey.slice(5) : "";
   const title = technician?.name || legacyName || (decodedKey === "unassigned" ? t("unassignedTechnician") : t("historicalTechnician"));
-  const clients = new Map((data.clients || []).map((client) => [client.id, client]));
   const startDate = filters.technicianOrdersStartDate || "";
   const endDate = filters.technicianOrdersEndDate || "";
-  const orders = (data.repairs || [])
-    .filter((repair) => repairMatchesTechnicianKey(repair, decodedKey, technicianById))
-    .sort((a, b) => String(b.repairTime || b.ticket || "").localeCompare(String(a.repairTime || a.ticket || "")));
-  const filteredOrders = orders.filter((repair) => {
-    const day = String(repair.repairTime || "").slice(0, 10);
-    return (!startDate || day >= startDate) && (!endDate || day <= endDate);
-  });
-  const page = paginate(filteredOrders, filters.technicianOrdersPage);
-  const businessFilteredOrders = filteredOrders.filter((repair) => !isCanceledRepair(repair));
-  const totals = businessFilteredOrders.reduce((sum, repair) => {
-    const skipAmount = isHistoricalAmountRepair(repair, technicianById, technicianByName);
-    const amount = skipAmount ? 0 : chargeAmount(repair);
-    const cost = skipAmount ? 0 : repairCostAmount(repair);
-    return {
-      amount: sum.amount + amount,
-      cost: sum.cost + cost,
-      profit: sum.profit + amount - cost,
-      open: sum.open + (isLockingFinalStatus(normalizeStatus(repair.status)) ? 0 : 1)
-    };
-  }, { amount: 0, cost: 0, profit: 0, open: 0 });
+  // 服务端分页 + 聚合：不再依赖内存全量 repairs/clients。
+  const [serverOrders, setServerOrders] = useState({ rows: [], total: 0, allTotal: 0, loading: true });
+  useEffect(() => {
+    let active = true;
+    setServerOrders((prev) => ({ ...prev, loading: true }));
+    const params = new URLSearchParams({ technicianKey: decodedKey, page: String(filters.technicianOrdersPage || 1) });
+    if (startDate) params.set("start", startDate);
+    if (endDate) params.set("end", endDate);
+    const allParams = new URLSearchParams({ technicianKey: decodedKey, pageSize: "1" });
+    Promise.all([
+      apiGet(`/api/repairs/search?${params.toString()}`),
+      (startDate || endDate) ? apiGet(`/api/repairs/search?${allParams.toString()}`) : Promise.resolve(null)
+    ])
+      .then(([res, allRes]) => {
+        if (!active) return;
+        setServerOrders({ rows: res.rows || [], total: res.total || 0, allTotal: allRes ? allRes.total || 0 : res.total || 0, loading: false });
+      })
+      .catch(() => { if (active) setServerOrders({ rows: [], total: 0, allTotal: 0, loading: false }); });
+    return () => { active = false; };
+  }, [decodedKey, startDate, endDate, filters.technicianOrdersPage, data._revision]);
+  const [serverTotals, setServerTotals] = useState({ amount: 0, cost: 0, profit: 0, businessCount: 0, openCount: 0 });
+  useEffect(() => {
+    let active = true;
+    const params = new URLSearchParams({ technicianKey: decodedKey });
+    if (startDate) params.set("start", startDate);
+    if (endDate) params.set("end", endDate);
+    apiGet(`/api/repairs/aggregates?${params.toString()}`)
+      .then((res) => { if (active) setServerTotals({ amount: res.totals?.amount || 0, cost: res.totals?.cost || 0, profit: res.totals?.profit || 0, businessCount: res.businessCount || 0, openCount: res.openCount || 0 }); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [decodedKey, startDate, endDate, data._revision]);
+  const page = {
+    current: filters.technicianOrdersPage || 1,
+    total: serverOrders.total,
+    totalPages: Math.max(1, Math.ceil(serverOrders.total / PAGE_SIZE)),
+    items: serverOrders.rows
+  };
+  const totals = { amount: serverTotals.amount, cost: serverTotals.cost, profit: serverTotals.profit, open: serverTotals.openCount };
   const updateDate = (key, value) => {
     const next = { ...filters, [key]: value, technicianOrdersPage: 1 };
     if (key === "technicianOrdersStartDate" && next.technicianOrdersEndDate && value > next.technicianOrdersEndDate) next.technicianOrdersEndDate = value;
@@ -3642,7 +3668,7 @@ function TechnicianOrdersPage({ data, technicianKey, navigate, filters, setFilte
         <Button variant="outline" onClick={() => navigate("/dashboard/technicians")}><ChevronLeft {...ICON_SM} /> {t("backToTechnicians")}</Button>
         <div className="technician-orders-title">
           <b>{title}</b>
-          <span>{filteredOrders.length} {t("orders")} / {orders.length} {t("orders")}</span>
+          <span>{serverOrders.total} {t("orders")} / {serverOrders.allTotal} {t("orders")}</span>
         </div>
         <DateRangeFilter
           lang={lang}
@@ -3658,7 +3684,7 @@ function TechnicianOrdersPage({ data, technicianKey, navigate, filters, setFilte
         <Pagination page={page} pageKey="technicianOrdersPage" filters={filters} setFilters={setFilters} t={t} />
       </Toolbar>
       <div className="metric-grid technician-orders-summary-grid">
-        <Metric title={t("orderCount")} value={businessFilteredOrders.length} />
+        <Metric title={t("orderCount")} value={serverTotals.businessCount} />
         <Metric title={t("repairAmount")} value={money(totals.amount)} />
         <Metric title={t("costAmount")} value={money(totals.cost)} />
         <Metric title={t("profitAmount")} value={money(totals.profit)} />
@@ -3666,7 +3692,7 @@ function TechnicianOrdersPage({ data, technicianKey, navigate, filters, setFilte
       {isMobileLayout ? (
         <div className="mobile-order-card-list technician-orders-mobile-list" data-smoke="mobile-technician-order-cards">
           {page.items.length ? page.items.map((repair) => {
-            const client = clients.get(repair.clientId) || EMPTY_CLIENT;
+            const client = { ...EMPTY_CLIENT, name: repair.clientName || "", phone: repair.clientPhone || "", level: repair.clientLevel || EMPTY_CLIENT.level };
             const amount = chargeAmount(repair);
             const cost = repairCostAmount(repair);
             const profit = amount - cost;
@@ -3696,7 +3722,7 @@ function TechnicianOrdersPage({ data, technicianKey, navigate, filters, setFilte
         <Table className="repairs-table technician-orders-table">
           <TableHeader><TableRow><TableHead>{t("ticket")}</TableHead><TableHead>{t("clientName")}</TableHead><TableHead>{t("phone")}</TableHead><TableHead>{t("brandModel")}</TableHead><TableHead>{t("issue")}</TableHead><TableHead>{t("status")}</TableHead><TableHead>{t("orderDate")}</TableHead><TableHead>{t("total")}</TableHead><TableHead>{t("costAmount")}</TableHead><TableHead>{t("profitAmount")}</TableHead></TableRow></TableHeader>
           <TableBody>{page.items.length ? page.items.map((repair) => {
-            const client = clients.get(repair.clientId) || EMPTY_CLIENT;
+            const client = { ...EMPTY_CLIENT, name: repair.clientName || "", phone: repair.clientPhone || "", level: repair.clientLevel || EMPTY_CLIENT.level };
             const amount = chargeAmount(repair);
             const cost = repairCostAmount(repair);
             const profit = amount - cost;

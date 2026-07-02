@@ -56,11 +56,11 @@
 
 ## 阶段 3：客户页 + 技师页
 
-- [ ] **T3.1** `/api/clients` 增加 GET：分页 + 搜索 + 每客户 repairCount（SQL 聚合）；DELETE 增加服务端"有单不可删"校验。验收：curl 分页/搜索正确；删除有单客户返回 409/错误。
-- [ ] **T3.2** ClientsPage 改服务器分页搜索，删除校验交给服务端错误提示。验收：功能等价。
-- [ ] **T3.3** ClientOrdersPage 改 `search?clientId=`。验收：某客户订单列表与改前一致。
-- [ ] **T3.4** 技师维度聚合接口：`/api/technicians` 增加看板聚合（按技师汇总单量/金额/最新单，支持日期筛选），或扩展 aggregates；TechniciansPage 看板 + TechnicianOrdersPage(`search?technicianKey=`) 切换；删除技师占用校验移到服务端。验收：看板数字与改前一致。
-- [ ] **T3.5** CategoriesPage 删除型号占用校验走服务端（catalog DELETE 校验或轻量 count 接口）。验收：删除被占用型号被服务端拒绝。
+- [x] **T3.1** `/api/clients` 增加 GET：分页 + 搜索 + 每客户 repairCount（SQL 聚合）；DELETE 增加服务端"有单不可删"校验。验收：curl 分页/搜索正确；删除有单客户返回 409/错误。
+- [x] **T3.2** ClientsPage 改服务器分页搜索，删除校验交给服务端错误提示。验收：功能等价。
+- [x] **T3.3** ClientOrdersPage 改 `search?clientId=`。验收：某客户订单列表与改前一致。
+- [x] **T3.4** 技师维度聚合接口：`/api/technicians` 增加看板聚合（按技师汇总单量/金额/最新单，支持日期筛选），或扩展 aggregates；TechniciansPage 看板 + TechnicianOrdersPage(`search?technicianKey=`) 切换；删除技师占用校验移到服务端。验收：看板数字与改前一致。
+- [x] **T3.5** CategoriesPage 删除型号占用校验走服务端（catalog DELETE 校验或轻量 count 接口）。验收：删除被占用型号被服务端拒绝。
 
 **检查点 CP3**：`npm run build` + `npm run smoke`；commit。
 

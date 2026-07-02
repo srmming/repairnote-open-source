@@ -20,7 +20,7 @@ const CANCELED_STATUSES = ["取消", "Cerrado", "Cancelar", "关闭", "拒保"];
 // paid   = 有付款记录 ? 付款合计 : (订金>=0.01 ? 订金 : 0)
 const DERIVED_REPAIRS_SQL = Prisma.sql`
   SELECT r.id, r.ticket, r.status, r.orderType, r.technicianId, r.technicianName,
-         r.brand, r.model, r.issue, r.clientId,
+         r.brand, r.model, r.issue, r.clientId, r.repairTime,
          LEFT(r.repairTime, 10) AS repairDay,
          COALESCE(NULLIF(LEFT(r.repairTime, 10), ''), DATE_FORMAT(r.createdAt, '%Y-%m-%d')) AS effectiveDay,
          CASE WHEN r.orderType = 'warranty' AND r.warrantyChargeable = 0 THEN 0
@@ -319,4 +319,101 @@ export async function reportFinance({ start = "", end = "", q = "", paymentsPage
 function dateOnly(date) {
   const pad = (num) => String(num).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+// 技师看板：口径与前端 technicianDashboardRows 一致——
+// 非取消单按（在册技师 id / 历史姓名归并同名技师 / 历史姓名 / 未分配）聚桶；
+// 维修单累计金额与利润，保修单累计亏损 max(0, cost - charge)；
+// openCount = 归一后不是「已取走/取消」；latest 按 (repairTime 为空回退 ticket) 取最新一单。
+const DASHBOARD_LOCKED_STATUSES = ["已取走", "Entregado", "取消", "Cerrado", "Cancelar", "关闭", "拒保"];
+
+export async function technicianDashboard({ date = "" } = {}) {
+  const dateCond = date ? Prisma.sql`d.repairDay = ${String(date).slice(0, 10)}` : Prisma.sql`1 = 1`;
+  const [groups, latestRows, technicians] = await Promise.all([
+    prisma.$queryRaw(Prisma.sql`
+      SELECT d.technicianId, d.technicianName COLLATE utf8mb4_bin AS technicianName,
+             COUNT(*) AS recordCount,
+             COALESCE(SUM(d.orderType = 'warranty'), 0) AS warrantyCount,
+             COALESCE(SUM(d.orderType <> 'warranty'), 0) AS repairCount,
+             COALESCE(SUM(CASE WHEN d.orderType <> 'warranty' THEN d.charge ELSE 0 END), 0) AS repairAmount,
+             COALESCE(SUM(CASE WHEN d.orderType <> 'warranty' THEN d.charge - d.cost ELSE 0 END), 0) AS repairProfit,
+             COALESCE(SUM(CASE WHEN d.orderType = 'warranty' THEN GREATEST(0, d.cost - d.charge) ELSE 0 END), 0) AS warrantyLoss,
+             COALESCE(SUM(d.status NOT IN (${Prisma.join(DASHBOARD_LOCKED_STATUSES)})), 0) AS openCount
+      FROM (${DERIVED_REPAIRS_SQL}) d WHERE ${dateCond}
+      GROUP BY d.technicianId, d.technicianName COLLATE utf8mb4_bin
+    `),
+    prisma.$queryRaw(Prisma.sql`
+      SELECT technicianId, technicianName, id, ticket, brand, model, status, repairTime FROM (
+        SELECT d.technicianId, d.technicianName COLLATE utf8mb4_bin AS technicianName,
+               d.id, d.ticket, d.brand, d.model, d.status, d.repairTime,
+               ROW_NUMBER() OVER (
+                 PARTITION BY d.technicianId, d.technicianName COLLATE utf8mb4_bin
+                 ORDER BY (CASE WHEN COALESCE(d.repairTime, '') <> '' THEN d.repairTime ELSE d.ticket END) DESC
+               ) AS rowNo
+        FROM (${DERIVED_REPAIRS_SQL}) d WHERE ${dateCond}
+      ) ranked WHERE rowNo = 1
+    `),
+    prisma.technician.findMany({ orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] })
+  ]);
+
+  const technicianById = new Map(technicians.map((technician) => [technician.id, technician]));
+  const technicianByName = new Map();
+  for (const technician of technicians) {
+    const name = String(technician.name || "").trim().toLowerCase();
+    if (name && !technicianByName.has(name)) technicianByName.set(name, technician);
+  }
+  const rows = new Map();
+  const makeRow = (key, name, technician = null, isUnassigned = false) => ({
+    id: key, name, technician, isUnassigned,
+    repairCount: 0, warrantyCount: 0, recordCount: 0, openCount: 0,
+    repairAmount: 0, repairProfit: 0, warrantyLoss: 0, latestRepair: null
+  });
+  for (const technician of technicians) {
+    rows.set(`id:${technician.id}`, makeRow(`id:${technician.id}`, technician.name || "", technician));
+  }
+  const bucketFor = (group) => {
+    const technician = technicianById.get(group.technicianId);
+    if (technician) {
+      const key = `id:${technician.id}`;
+      if (!rows.has(key)) rows.set(key, makeRow(key, technician.name || "", technician));
+      return rows.get(key);
+    }
+    const legacyName = String(group.technicianName || "").trim();
+    const namedTechnician = technicianByName.get(legacyName.toLowerCase());
+    if (namedTechnician) {
+      const key = `id:${namedTechnician.id}`;
+      if (!rows.has(key)) rows.set(key, makeRow(key, namedTechnician.name || "", namedTechnician));
+      return rows.get(key);
+    }
+    if (legacyName) {
+      const key = `name:${legacyName}`;
+      if (!rows.has(key)) rows.set(key, makeRow(key, legacyName));
+      return rows.get(key);
+    }
+    const key = "unassigned";
+    if (!rows.has(key)) rows.set(key, makeRow(key, "", null, true));
+    return rows.get(key);
+  };
+  for (const group of groups) {
+    const row = bucketFor(group);
+    row.recordCount += Number(group.recordCount);
+    row.warrantyCount += Number(group.warrantyCount);
+    row.repairCount += Number(group.repairCount);
+    row.repairAmount += money(group.repairAmount);
+    row.repairProfit += money(group.repairProfit);
+    row.warrantyLoss += money(group.warrantyLoss);
+    row.openCount += Number(group.openCount);
+  }
+  for (const latest of latestRows) {
+    const row = bucketFor(latest);
+    const sortKey = (repair) => String(repair?.repairTime || repair?.ticket || "");
+    if (!row.latestRepair || sortKey(latest).localeCompare(sortKey(row.latestRepair)) > 0) {
+      row.latestRepair = { id: latest.id, ticket: latest.ticket, brand: latest.brand, model: latest.model, status: latest.status, repairTime: latest.repairTime };
+    }
+  }
+  return {
+    rows: [...rows.values()]
+      .filter((row) => row.technician || row.repairCount || row.warrantyCount || row.openCount)
+      .sort((a, b) => Number(a.isUnassigned) - Number(b.isUnassigned) || b.repairProfit - a.repairProfit || b.repairAmount - a.repairAmount || b.repairCount - a.repairCount || String(a.name).localeCompare(String(b.name)))
+  };
 }
