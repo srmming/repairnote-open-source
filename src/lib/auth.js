@@ -64,6 +64,17 @@ export async function createSession(staff) {
   await setSessionCookie(token, expiresAt);
 }
 
+export async function createSuperAdminSession(admin) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
+  const tokenHash = hashToken(token);
+  await prisma.superAdmin.update({
+    where: { id: admin.id },
+    data: { sessionTokenHash: tokenHash, sessionExpiresAt: expiresAt }
+  });
+  await setSessionCookie(token, expiresAt);
+}
+
 async function setSessionCookie(token, expiresAt) {
   const jar = await cookies();
   jar.set(COOKIE_NAME, token, {
@@ -80,6 +91,7 @@ export async function clearSession() {
   const token = jar.get(COOKIE_NAME)?.value;
   if (token) {
     await prisma.staffSession.deleteMany({ where: { tokenHash: hashToken(token) } });
+    await prisma.superAdmin.updateMany({ where: { sessionTokenHash: hashToken(token) }, data: { sessionTokenHash: null, sessionExpiresAt: null } });
   }
   jar.delete(COOKIE_NAME);
 }
@@ -114,6 +126,27 @@ export async function requireStaff() {
     throw error;
   }
   return staff;
+}
+
+export async function getCurrentSuperAdmin() {
+  const jar = await cookies();
+  const token = jar.get(COOKIE_NAME)?.value;
+  if (!token) return null;
+  const admin = await prisma.superAdmin.findFirst({
+    where: { sessionTokenHash: hashToken(token), sessionExpiresAt: { gt: new Date() } },
+    select: { id: true, username: true, createdAt: true, updatedAt: true }
+  });
+  return admin || null;
+}
+
+export async function requireSuperAdmin() {
+  const admin = await getCurrentSuperAdmin();
+  if (!admin) {
+    const error = new Error("UNAUTHORIZED");
+    error.status = 401;
+    throw error;
+  }
+  return admin;
 }
 
 export function normalizedPagePermissions(staff) {

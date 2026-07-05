@@ -43,6 +43,13 @@ function shouldSeedDemoData() {
 }
 
 async function main() {
+  const hasSuperAdmin = (await prisma.superAdmin.count()) > 0;
+  if (!hasSuperAdmin) {
+    const username = process.env.REPAIRNOTE_SUPER_ADMIN_USERNAME || "super";
+    const password = process.env.REPAIRNOTE_SUPER_ADMIN_PASSWORD || "super123";
+    await prisma.superAdmin.create({ data: { username, passwordHash: hashPassword(password) } });
+  }
+
   const shop = await prisma.shop.upsert({
     where: { slug: DEFAULT_SHOP_SLUG },
     create: { id: DEFAULT_SHOP_ID, slug: DEFAULT_SHOP_SLUG, name: "默认门店", active: true },

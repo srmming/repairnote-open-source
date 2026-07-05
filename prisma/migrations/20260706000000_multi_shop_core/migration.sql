@@ -9,6 +9,19 @@ CREATE TABLE `Shop` (
   PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+CREATE TABLE `SuperAdmin` (
+  `id` VARCHAR(191) NOT NULL,
+  `username` VARCHAR(191) NOT NULL,
+  `passwordHash` VARCHAR(255) NOT NULL,
+  `sessionTokenHash` VARCHAR(255) NULL,
+  `sessionExpiresAt` DATETIME(3) NULL,
+  `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updatedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE INDEX `SuperAdmin_username_key`(`username`),
+  UNIQUE INDEX `SuperAdmin_sessionTokenHash_key`(`sessionTokenHash`),
+  PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 INSERT INTO `Shop` (`id`, `slug`, `name`, `active`, `createdAt`, `updatedAt`)
 VALUES ('default-shop', 'default', '默认门店', true, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3));
 
