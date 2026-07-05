@@ -7732,7 +7732,8 @@ function localNetworkOrigin() {
 
 function buildPublicStatusUrl(settings, publicToken) {
   const base = String(settings?.publicBaseUrl || localNetworkOrigin() || mountedOrigin() || "").trim().replace(/\/+$/, "");
-  return base ? `${base}/status/${publicToken}` : `/status/${publicToken}`;
+  const path = `/status/${encodeURIComponent(publicToken)}?slug=${encodeURIComponent(activeShopSlug || "default")}`;
+  return base ? `${base}${path}` : path;
 }
 
 function whatsappTemplateValue(settings) {

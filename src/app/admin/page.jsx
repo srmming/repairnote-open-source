@@ -15,7 +15,7 @@ export default function AdminPage() {
     apiGet("/api/admin/auth/me").then((data) => {
       setUser(data.user);
       if (data.user) refreshShops();
-    });
+    }).catch((error) => setMessage(error.message || "加载失败"));
   }, []);
 
   async function refreshShops() {
@@ -25,38 +25,57 @@ export default function AdminPage() {
 
   async function submitLogin(event) {
     event.preventDefault();
-    const data = await apiPost("/api/admin/auth/login", login);
-    setUser(data.user);
-    await refreshShops();
+    await runAction(async () => {
+      const data = await apiPost("/api/admin/auth/login", login);
+      setUser(data.user);
+      await refreshShops();
+    });
   }
 
   async function createShop(event) {
     event.preventDefault();
-    const data = await apiPost("/api/admin/shops", { action: "createShop", ...shopForm });
-    setShops(data.shops || []);
-    setShopForm({ slug: "", name: "" });
-    setMessage("门店已创建");
+    await runAction(async () => {
+      const data = await apiPost("/api/admin/shops", { action: "createShop", ...shopForm });
+      setShops(data.shops || []);
+      setShopForm({ slug: "", name: "" });
+      setMessage("门店已创建");
+    });
   }
 
   async function toggleShop(shop) {
-    const data = await apiPost("/api/admin/shops", { action: "toggleShop", shopId: shop.id, active: !shop.active });
-    setShops(data.shops || []);
+    await runAction(async () => {
+      const data = await apiPost("/api/admin/shops", { action: "toggleShop", shopId: shop.id, active: !shop.active });
+      setShops(data.shops || []);
+    });
   }
 
   async function createAdmin(event) {
     event.preventDefault();
-    const data = await apiPost("/api/admin/shops", { action: "createAdmin", ...adminForm });
-    setShops(data.shops || []);
-    setAdminForm({ shopId: adminForm.shopId, name: "", username: "", password: "" });
-    setMessage("管理员账号已创建");
+    await runAction(async () => {
+      const data = await apiPost("/api/admin/shops", { action: "createAdmin", ...adminForm });
+      setShops(data.shops || []);
+      setAdminForm({ shopId: adminForm.shopId, name: "", username: "", password: "" });
+      setMessage("管理员账号已创建");
+    });
   }
 
   async function resetPassword(event) {
     event.preventDefault();
-    const data = await apiPost("/api/admin/shops", { action: "resetPassword", ...resetForm });
-    setShops(data.shops || []);
-    setResetForm({ staffId: "", password: "" });
-    setMessage("密码已重置");
+    await runAction(async () => {
+      const data = await apiPost("/api/admin/shops", { action: "resetPassword", ...resetForm });
+      setShops(data.shops || []);
+      setResetForm({ staffId: "", password: "" });
+      setMessage("密码已重置");
+    });
+  }
+
+  async function runAction(action) {
+    try {
+      setMessage("");
+      await action();
+    } catch (error) {
+      setMessage(error.message || "操作失败");
+    }
   }
 
   if (!user) {
