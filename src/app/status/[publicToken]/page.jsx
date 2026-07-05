@@ -157,13 +157,11 @@ function statusHint(status, text) {
 
 export default async function PublicStatusPage({ params }) {
   const { publicToken } = await params;
-  const [repair, settings] = await Promise.all([
-    prisma.repair.findUnique({
-      where: { publicToken },
-      include: { client: true, items: true, payments: true }
-    }),
-    prisma.setting.findUnique({ where: { id: "main" } })
-  ]);
+  const repair = await prisma.repair.findUnique({
+    where: { publicToken },
+    include: { shop: true, client: true, items: true, payments: true }
+  });
+  const settings = repair?.shop?.active === false ? null : await prisma.setting.findUnique({ where: { shopId_key: { shopId: repair?.shopId || "default-shop", key: "main" } } });
   const lang = publicLang(settings?.value || {});
   const phone = settings?.value?.phone || "";
   const text = lang === "es"
@@ -226,7 +224,7 @@ export default async function PublicStatusPage({ params }) {
       contactHint: "如需咨询，请联系店铺并提供维修单号。"
     };
 
-  if (!repair) {
+  if (!repair || repair.shop?.active === false) {
     return (
       <main className="public-status">
         <section className="public-card public-card-empty">

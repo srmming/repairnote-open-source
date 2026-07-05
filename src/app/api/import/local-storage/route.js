@@ -7,8 +7,8 @@ export async function POST(request) {
     const staff = await requireStaff();
     if (!staff.isAdmin) return Response.json({ error: "只有管理员可导入旧数据" }, { status: 403 });
     const data = await request.json();
-    await syncFromClientData(withoutImportedUsers(validateBusinessDataShape(data, "旧 localStorage 数据")));
-    const imported = await getBootstrapData();
+    await syncFromClientData(withoutImportedUsers(validateBusinessDataShape(data, "旧 localStorage 数据")), { shopId: staff.shopId });
+    const imported = await getBootstrapData({ shopId: staff.shopId });
     return Response.json({
       ok: true,
       counts: {

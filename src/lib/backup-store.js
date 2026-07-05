@@ -1,16 +1,19 @@
 import { prisma } from "@/lib/prisma";
 import { getBootstrapData, syncFromClientData } from "@/lib/data-store";
+import { DEFAULT_SHOP_ID } from "@/lib/shop";
 import { validateBusinessDataShape } from "@/lib/data-validation";
 
 const MAX_BACKUPS = 60;
 
 export async function createBackupSnapshot({ kind = "manual", reason = "", staff = null, data = null } = {}) {
-  const sourceData = data && !hasUnloadedRepairs(data) ? data : await getBootstrapData({ includeRepairItems: true });
+  const shopId = staff?.shopId || DEFAULT_SHOP_ID;
+  const sourceData = data && !hasUnloadedRepairs(data) ? data : await getBootstrapData({ shopId, includeRepairItems: true });
   const payload = JSON.parse(JSON.stringify(sourceData));
   const cleanData = validateBusinessDataShape(payload, "备份数据");
   const snapshot = await prisma.backupSnapshot.create({
     data: {
       kind,
+      shopId,
       reason,
       data: cleanData,
       counts: backupCounts(cleanData),
@@ -18,15 +21,16 @@ export async function createBackupSnapshot({ kind = "manual", reason = "", staff
     },
     select: backupSelect()
   });
-  await pruneOldBackups();
+  await pruneOldBackups(shopId);
   return snapshot;
 }
 
 export async function ensureDailyAutoBackup({ staff = null, data = null } = {}) {
+  const shopId = staff?.shopId || DEFAULT_SHOP_ID;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const existing = await prisma.backupSnapshot.findFirst({
-    where: { kind: "auto", createdAt: { gte: today } },
+    where: { shopId, kind: "auto", createdAt: { gte: today } },
     select: { id: true }
   });
   if (existing) return null;
@@ -34,16 +38,17 @@ export async function ensureDailyAutoBackup({ staff = null, data = null } = {}) 
   return createBackupSnapshot({ kind: "auto", reason: "每日自动备份", staff, data });
 }
 
-export async function listBackupSnapshots() {
+export async function listBackupSnapshots(staff) {
   return prisma.backupSnapshot.findMany({
+    where: { shopId: staff?.shopId || DEFAULT_SHOP_ID },
     orderBy: { createdAt: "desc" },
     take: MAX_BACKUPS,
     select: backupSelect()
   });
 }
 
-export async function getBackupSnapshot(id) {
-  const snapshot = await prisma.backupSnapshot.findUnique({ where: { id } });
+export async function getBackupSnapshot(id, staff) {
+  const snapshot = await prisma.backupSnapshot.findFirst({ where: { id, shopId: staff?.shopId || DEFAULT_SHOP_ID } });
   if (!snapshot) {
     const error = new Error("没有找到这份备份");
     error.status = 404;
@@ -53,10 +58,10 @@ export async function getBackupSnapshot(id) {
 }
 
 export async function restoreBackupSnapshot(id, staff) {
-  const snapshot = await getBackupSnapshot(id);
+  const snapshot = await getBackupSnapshot(id, staff);
   await createBackupSnapshot({ kind: "safety", reason: "恢复前自动备份", staff });
   const cleanData = validateBusinessDataShape(snapshot.data, "历史备份");
-  return syncFromClientData(cleanData);
+  return syncFromClientData(cleanData, { shopId: staff?.shopId || DEFAULT_SHOP_ID });
 }
 
 export function backupFileName(snapshot) {
@@ -88,14 +93,15 @@ function backupSelect() {
   };
 }
 
-async function pruneOldBackups() {
+async function pruneOldBackups(shopId) {
   const old = await prisma.backupSnapshot.findMany({
+    where: { shopId },
     orderBy: { createdAt: "desc" },
     skip: MAX_BACKUPS,
     select: { id: true }
   });
   if (!old.length) return;
-  await prisma.backupSnapshot.deleteMany({ where: { id: { in: old.map((item) => item.id) } } });
+  await prisma.backupSnapshot.deleteMany({ where: { shopId, id: { in: old.map((item) => item.id) } } });
 }
 
 function hasUnloadedRepairs(data) {

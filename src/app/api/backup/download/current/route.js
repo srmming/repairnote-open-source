@@ -4,8 +4,8 @@ import { getBootstrapData } from "@/lib/data-store";
 
 export async function GET() {
   try {
-    await requirePageAccess("backup");
-    const data = await getBootstrapData({ includeRepairItems: true });
+    const staff = await requirePageAccess("backup");
+    const data = await getBootstrapData({ shopId: staff.shopId, includeRepairItems: true });
     const now = new Date();
     return zipResponse({
       json: backupJsonPayload(data),

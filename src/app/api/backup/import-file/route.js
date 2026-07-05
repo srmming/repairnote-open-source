@@ -27,8 +27,8 @@ export async function POST(request) {
     const cleanData = withoutImportedUsers(validateBusinessDataShape(parsed.data || parsed, "备份文件"));
 
     await createBackupSnapshot({ kind: "safety", reason: "导入文件前自动备份", staff });
-    await syncFromClientData(cleanData);
-    return Response.json({ ok: true, data: await getBootstrapData() });
+    await syncFromClientData(cleanData, { shopId: staff.shopId });
+    return Response.json({ ok: true, data: await getBootstrapData({ shopId: staff.shopId }) });
   } catch (error) {
     if (error instanceof SyntaxError) {
       error.message = "备份文件格式不正确";

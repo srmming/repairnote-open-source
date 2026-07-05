@@ -29,17 +29,17 @@ export async function POST(request) {
     validateBusinessDataShape(converted.data, "外部历史文件");
 
     await createBackupSnapshot({ kind: "safety", reason: "导入外部历史数据前自动备份", staff });
-    const currentData = await getBootstrapData({ includeRepairItems: true });
+    const currentData = await getBootstrapData({ shopId: staff.shopId, includeRepairItems: true });
     const currentRevision = currentData._revision;
     const merged = mergeExternalHistoryData(currentData, converted.data);
     validateBusinessDataShape(merged.data, "合并后的外部历史数据");
-    const latestRevision = await getBusinessRevision();
+    const latestRevision = await getBusinessRevision({ shopId: staff.shopId });
     if (currentRevision !== latestRevision) {
       const error = new Error("数据已被其他设备更新，请刷新页面后再导入");
       error.status = 409;
       throw error;
     }
-    await syncFromClientData(merged.data);
+    await syncFromClientData(merged.data, { shopId: staff.shopId });
 
     return Response.json({
       ok: true,
@@ -47,7 +47,7 @@ export async function POST(request) {
         ...converted.summary,
         ...merged.summary
       },
-      data: await getBootstrapData()
+      data: await getBootstrapData({ shopId: staff.shopId })
     });
   } catch (error) {
     if (error instanceof SyntaxError) {

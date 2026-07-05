@@ -4,10 +4,10 @@ import { normalizeStatus, statusOrder } from "@/lib/seed-data";
 
 export async function GET(request) {
   try {
-    await requirePageAccess("reports");
+    const staff = await requirePageAccess("reports");
     const url = new URL(request.url);
     const range = getRange(url.searchParams);
-    const data = await getBootstrapData({ includeRepairItems: true });
+    const data = await getBootstrapData({ shopId: staff.shopId, includeRepairItems: true });
     const orders = data.repairs
       .map((repair) => ({ ...repair, status: normalizeStatus(repair.status) }))
       .filter((repair) => repair.status !== "取消" && inRange(repair.repairTime, range.start, range.end));

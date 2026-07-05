@@ -6,7 +6,7 @@ import { validateBusinessDataShape } from "@/lib/data-validation";
 export async function GET() {
   try {
     const staff = await requireAnyPageAccess();
-    const data = await getBootstrapData();
+    const data = await getBootstrapData({ shopId: staff.shopId });
     return Response.json(compactBootstrap(staff.isAdmin ? data : { ...data, users: [{ ...staff }] }));
   } catch (error) {
     return authErrorResponse(error);
@@ -48,7 +48,7 @@ export async function PUT(request) {
   try {
     const staff = await requireAnyPageAccess();
     const data = await request.json();
-    const current = await getBootstrapData();
+    const current = await getBootstrapData({ shopId: staff.shopId });
     if (data._revision && data._revision !== current._revision) {
       const error = new Error("数据已被其他设备更新，请刷新页面后再保存");
       error.status = 409;
@@ -60,8 +60,8 @@ export async function PUT(request) {
       : permittedBootstrapData(staff, validated, current);
     if (!shouldPersist) return Response.json(current);
     const saved = canUseNonRepairSave(validated, current)
-      ? await syncNonRepairBusinessData(safeData, { syncClients: !sameIdSet(validated.clients || [], current.clients || []) })
-      : await syncFromClientData(safeData);
+      ? await syncNonRepairBusinessData(safeData, { shopId: staff.shopId, syncClients: !sameIdSet(validated.clients || [], current.clients || []) })
+      : await syncFromClientData(safeData, { shopId: staff.shopId });
     try {
       await ensureDailyAutoBackup({ staff, data: saved });
     } catch (backupError) {

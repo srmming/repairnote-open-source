@@ -41,16 +41,20 @@ export function hashToken(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-export async function createSession(staffId) {
+export async function createSession(staff) {
+  const staffRow = typeof staff === "string" ? await prisma.staff.findUnique({ where: { id: staff } }) : staff;
+  if (!staffRow?.shopId) throw new Error("STAFF_SHOP_MISSING");
   const token = crypto.randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
   const tokenHash = hashToken(token);
+  const staffId = staffRow.id;
+  const shopId = staffRow.shopId;
   await prisma.$transaction([
     prisma.staffSession.deleteMany({
       where: { staffId, expiresAt: { lte: new Date() } }
     }),
     prisma.staffSession.create({
-      data: { staffId, tokenHash, expiresAt }
+      data: { staffId, shopId, tokenHash, expiresAt }
     }),
     prisma.staff.update({
       where: { id: staffId },
@@ -87,7 +91,7 @@ export async function getCurrentStaff() {
   const tokenHash = hashToken(token);
   const session = await prisma.staffSession.findUnique({
     where: { tokenHash },
-    include: { staff: { select: { id: true, name: true, username: true, email: true, isAdmin: true, pagePermissions: true } } }
+    include: { staff: { select: { id: true, shopId: true, name: true, username: true, email: true, isAdmin: true, pagePermissions: true } } }
   });
   if (session?.expiresAt > new Date()) return session.staff;
 
@@ -98,7 +102,7 @@ export async function getCurrentStaff() {
 
   return prisma.staff.findFirst({
     where: { sessionTokenHash: tokenHash, sessionExpiresAt: { gt: new Date() } },
-    select: { id: true, name: true, username: true, email: true, isAdmin: true, pagePermissions: true }
+    select: { id: true, shopId: true, name: true, username: true, email: true, isAdmin: true, pagePermissions: true }
   });
 }
 

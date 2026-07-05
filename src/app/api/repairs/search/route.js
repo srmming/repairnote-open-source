@@ -3,7 +3,7 @@ import { searchRepairs } from "@/lib/data-store";
 
 export async function GET(request) {
   try {
-    await requireAnyPageAccess(["repairs", "warranties"]);
+    const staff = await requireAnyPageAccess(["repairs", "warranties"]);
     const url = new URL(request.url);
     const params = url.searchParams;
     const result = await searchRepairs({
@@ -13,7 +13,8 @@ export async function GET(request) {
       start: params.get("start") || "",
       end: params.get("end") || "",
       page: params.get("page") || "1",
-      pageSize: params.get("pageSize") || ""
+      pageSize: params.get("pageSize") || "",
+      shopId: staff.shopId
     });
     return Response.json(result);
   } catch (error) {

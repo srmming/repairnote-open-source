@@ -7047,7 +7047,7 @@ function normalizeStatus(status) {
 }
 
 async function apiGet(url) {
-  const response = await fetch(url);
+  const response = await fetch(url, { headers: shopHeaders() });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || "请求失败");
   return data;
@@ -7056,7 +7056,7 @@ async function apiGet(url) {
 async function apiJson(url, method, body) {
   const response = await fetch(url, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...shopHeaders() },
     body: JSON.stringify(body)
   });
   const data = await response.json().catch(() => ({}));
@@ -7065,14 +7065,14 @@ async function apiJson(url, method, body) {
 }
 
 async function apiFormData(url, method, body) {
-  const response = await fetch(url, { method, body });
+  const response = await fetch(url, { method, body, headers: shopHeaders() });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || "请求失败");
   return data;
 }
 
 async function downloadFromUrl(url, filename) {
-  const response = await fetch(url);
+  const response = await fetch(url, { headers: shopHeaders() });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     throw new Error(data.error || "下载失败");
@@ -7086,6 +7086,11 @@ async function downloadFromUrl(url, filename) {
   link.click();
   link.remove();
   URL.revokeObjectURL(objectUrl);
+}
+
+function shopHeaders() {
+  const slug = typeof window === "undefined" ? "" : window.location.pathname.split("/").filter(Boolean)[0] || "default";
+  return { "x-repairnote-shop-slug": slug };
 }
 
 function downloadFileName(contentDisposition) {
