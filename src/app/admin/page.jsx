@@ -83,6 +83,7 @@ export default function AdminPage() {
       <main style={styles.page}>
         <form style={styles.panel} onSubmit={submitLogin}>
           <h1 style={styles.title}>RepairNOTE Admin</h1>
+          {message ? <p style={styles.notice}>{message}</p> : null}
           <input style={styles.input} placeholder="超级管理员账号" value={login.username} onChange={(event) => setLogin({ ...login, username: event.target.value })} />
           <input style={styles.input} placeholder="密码" type="password" value={login.password} onChange={(event) => setLogin({ ...login, password: event.target.value })} />
           <button style={styles.primary}>登录</button>
