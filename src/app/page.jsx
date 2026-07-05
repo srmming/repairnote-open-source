@@ -277,6 +277,9 @@ const uiText = {
   zh: {
     appTitle: "repuestomovil",
     loginTitle: "repuestomovil",
+    setupTitle: "首次设置",
+    setupHint: "创建第一个管理员账号",
+    setupButton: "创建并进入",
     username: "账号",
     password: "密码",
     forgotPassword: "忘记密码",
@@ -783,6 +786,9 @@ const uiText = {
   es: {
     appTitle: "repuestomovil",
     loginTitle: "repuestomovil",
+    setupTitle: "Configuración inicial",
+    setupHint: "Crea la primera cuenta administradora",
+    setupButton: "Crear y entrar",
     username: "Usuario",
     password: "Contraseña",
     forgotPassword: "Olvidé mi contraseña",
@@ -1325,6 +1331,7 @@ export default function AppPage() {
   const [data, setData] = useState(seedData);
   const [route, setRoute] = useState("/login");
   const [session, setSession] = useState(null);
+  const [setupRequired, setSetupRequired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
   const [toastText, setToastText] = useState("");
@@ -1559,6 +1566,7 @@ export default function AppPage() {
     try {
       const me = await apiGet("/api/auth/me");
       setSession(me.user);
+      setSetupRequired(Boolean(me.setupRequired));
       if (!me.user) return;
       const lightData = await apiGet("/api/bootstrap");
       const normalized = normalizeData(lightData);
@@ -1788,7 +1796,7 @@ export default function AppPage() {
   if (!mounted || loading) return null;
 
   if (!session) {
-    return <Login theme={theme} onThemeChange={changeTheme} onLogin={async (username, password) => {
+    return <Login theme={theme} onThemeChange={changeTheme} setupRequired={setupRequired} onLogin={async (username, password) => {
       const result = await apiJson("/api/auth/login", "POST", { username, password });
       const lightData = await apiGet("/api/bootstrap");
       const normalized = normalizeData(lightData);
@@ -1796,6 +1804,7 @@ export default function AppPage() {
       dataRef.current = normalized;
       setData(normalized);
       setSession(result.user);
+      setSetupRequired(false);
       navigate("/dashboard/repairs");
     }} />;
   }
@@ -1891,7 +1900,7 @@ export default function AppPage() {
   );
 }
 
-function Login({ onLogin, theme, onThemeChange }) {
+function Login({ onLogin, theme, onThemeChange, setupRequired = false }) {
   const [lang, setLang] = useState("zh");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -1908,7 +1917,8 @@ function Login({ onLogin, theme, onThemeChange }) {
               {languages.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
             </Select>
           </div>
-          <h1 className="login-title">{t("loginTitle")}</h1>
+          <h1 className="login-title">{setupRequired ? t("setupTitle") : t("loginTitle")}</h1>
+          {setupRequired ? <p className="muted" style={{ marginTop: -6 }}>{t("setupHint")}</p> : null}
           <form onSubmit={async (event) => {
             event.preventDefault();
             setError("");
@@ -1920,10 +1930,10 @@ function Login({ onLogin, theme, onThemeChange }) {
           }}>
             <Field><FieldIcon><User {...ICON} /></FieldIcon><Input value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("username")} autoComplete="username" /></Field>
             <div style={{ height: 12 }} />
-            <Field><FieldIcon><Lock {...ICON} /></FieldIcon><Input value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("password")} type="password" autoComplete="current-password" /></Field>
+            <Field><FieldIcon><Lock {...ICON} /></FieldIcon><Input value={password} onChange={(event) => setPassword(event.target.value)} placeholder={t("password")} type="password" autoComplete={setupRequired ? "new-password" : "current-password"} /></Field>
             <div className="login-error">{error}</div>
-            <TextLink className="forgot" href="#/login">{t("forgotPassword")}</TextLink>
-            <Button style={{ width: "100%" }} type="submit">{t("login")}</Button>
+            {setupRequired ? null : <TextLink className="forgot" href="#/login">{t("forgotPassword")}</TextLink>}
+            <Button style={{ width: "100%" }} type="submit">{setupRequired ? t("setupButton") : t("login")}</Button>
           </form>
         </CardContent>
       </Card>

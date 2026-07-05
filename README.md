@@ -82,6 +82,8 @@ npm run db:seed
 npm run plesk:pack
 ```
 
+Plesk deployment: see `Plesk部署说明.md`.
+
 ## Deployment Notes
 
 Example environment files are provided for local, VPS, and Plesk-style installs:

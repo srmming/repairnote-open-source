@@ -10,9 +10,7 @@ loadDotEnv(root);
 const env = {
   ...process.env,
   NODE_ENV: "production",
-  REPAIRNOTE_ADMIN_USERNAME: process.env.REPAIRNOTE_ADMIN_USERNAME || "admin",
-  REPAIRNOTE_ADMIN_PASSWORD: process.env.REPAIRNOTE_ADMIN_PASSWORD || "admin123",
-  REPAIRNOTE_COOKIE_SECURE: process.env.REPAIRNOTE_COOKIE_SECURE || "false"
+  REPAIRNOTE_COOKIE_SECURE: process.env.REPAIRNOTE_COOKIE_SECURE || "true"
 };
 
 Object.assign(process.env, env);
@@ -34,9 +32,9 @@ function run(command, args) {
 }
 
 console.log("RepairNOTE Plesk 初始化：使用 MySQL/MariaDB 数据库");
-console.log("默认管理员：admin / admin123（如已存在员工账号，不会覆盖）");
+console.log("如果没有预设管理员密码，首次打开网页时创建管理员。");
 
-run("npx", ["prisma", "migrate", "deploy", "--schema", "prisma/schema.prisma"]);
+run("npx", ["prisma", "db", "push", "--schema", "prisma/schema.prisma"]);
 run("npx", ["prisma", "generate", "--schema", "prisma/schema.prisma"]);
 run("npx", ["prisma", "db", "seed", "--schema", "prisma/schema.prisma"]);
 run("npx", ["next", "build"]);

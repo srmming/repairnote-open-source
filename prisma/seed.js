@@ -43,13 +43,16 @@ function shouldSeedDemoData() {
 async function main() {
   const hasStaff = (await prisma.staff.count()) > 0;
   if (!hasStaff) {
-    const adminUsername = process.env.REPAIRNOTE_ADMIN_USERNAME || (process.env.NODE_ENV === "production" ? "admin" : "ming");
-    const adminPassword = process.env.REPAIRNOTE_ADMIN_PASSWORD || (process.env.NODE_ENV === "production" ? "admin123" : "123456");
+    const adminUsername = process.env.REPAIRNOTE_ADMIN_USERNAME || (process.env.NODE_ENV === "production" ? "" : "ming");
+    const adminPassword = process.env.REPAIRNOTE_ADMIN_PASSWORD || (process.env.NODE_ENV === "production" ? "" : "123456");
     const placeholderPassword = adminPassword === "change-this-before-deploy";
-    if (!adminUsername || !adminPassword || placeholderPassword) {
+    if (process.env.NODE_ENV === "production" && !adminPassword) {
+      console.log("未预设管理员密码，首次打开网页时创建管理员。");
+    } else if (!adminUsername || !adminPassword || placeholderPassword) {
       throw new Error("请先设置 REPAIRNOTE_ADMIN_USERNAME 和真实的 REPAIRNOTE_ADMIN_PASSWORD，不能使用 change-this-before-deploy");
+    } else {
+      await prisma.staff.create({ data: { id: "u1", name: adminUsername, username: adminUsername, email: "", passwordHash: hashPassword(adminPassword), isAdmin: true, pagePermissions: ["repairs", "warranties", "clients", "categories", "modules", "services", "attributes", "technicians", "reports", "finance", "settings", "backup"] } });
     }
-    await prisma.staff.create({ data: { id: "u1", name: adminUsername, username: adminUsername, email: "", passwordHash: hashPassword(adminPassword), isAdmin: true, pagePermissions: ["repairs", "warranties", "clients", "categories", "modules", "services", "attributes", "technicians", "reports", "finance", "settings", "backup"] } });
   }
 
   await prisma.setting.upsert({ where: { id: "main" }, create: { id: "main", value: defaultSettings }, update: {} });

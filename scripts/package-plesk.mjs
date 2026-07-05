@@ -18,6 +18,7 @@ const includes = [
   "src",
   "prisma",
   ".env.plesk.example",
+  "Plesk部署说明.md",
   "scripts/plesk-setup.mjs",
   "scripts/mysql-setup.mjs",
   "scripts/load-env.mjs",
