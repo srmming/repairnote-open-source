@@ -20,6 +20,7 @@ const dbSortOrder = (value, fallback = 0) => {
   return Number.isFinite(number) ? Math.trunc(number) : fallback;
 };
 const DEFAULT_TECHNICIAN_COLOR = "#16a34a";
+const IN_QUERY_BATCH_SIZE = 20000;
 
 function formatClientName(value) {
   return String(value || "")
@@ -1472,15 +1473,23 @@ async function remapImportConflicts(data, shopId) {
 async function otherShopIds(model, idValues, shopId) {
   const values = [...new Set(idValues.filter(Boolean))];
   if (!values.length) return new Set();
-  const rows = await model.findMany({ where: { id: { in: values }, shopId: { not: shopId } }, select: { id: true } });
+  const rows = await findManyInBatches(model, values, (batch) => ({ where: { id: { in: batch }, shopId: { not: shopId } }, select: { id: true } }));
   return new Set(rows.map((row) => row.id));
 }
 
 async function otherShopRepairPublicTokens(repairs = [], shopId) {
   const values = [...new Set((repairs || []).map((repair) => repair?.publicToken).filter(Boolean))];
   if (!values.length) return new Set();
-  const rows = await prisma.repair.findMany({ where: { publicToken: { in: values }, shopId: { not: shopId } }, select: { publicToken: true } });
+  const rows = await findManyInBatches(prisma.repair, values, (batch) => ({ where: { publicToken: { in: batch }, shopId: { not: shopId } }, select: { publicToken: true } }));
   return new Set(rows.map((row) => row.publicToken));
+}
+
+async function findManyInBatches(model, values, queryForBatch) {
+  const rows = [];
+  for (let index = 0; index < values.length; index += IN_QUERY_BATCH_SIZE) {
+    rows.push(...await model.findMany(queryForBatch(values.slice(index, index + IN_QUERY_BATCH_SIZE))));
+  }
+  return rows;
 }
 
 function idRemap(values) {
