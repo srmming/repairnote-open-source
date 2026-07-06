@@ -15,6 +15,7 @@ tmp/
 repairnote-promo-20s/.thumbnails/
 *.png
 *.sql
+!prisma/migrations/**/migration.sql
 *.dump
 *.bak
 *.backup

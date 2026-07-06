@@ -3,9 +3,9 @@ import { deleteRepairRecord, getRepairById, saveRepairRecord } from "@/lib/data-
 
 export async function GET(_request, { params }) {
   try {
-    await requireAnyPageAccess(["repairs", "warranties"]);
+    const staff = await requireAnyPageAccess(["repairs", "warranties"]);
     const { id } = await params;
-    const repair = await getRepairById(id);
+    const repair = await getRepairById(id, { shopId: staff.shopId });
     if (!repair) return Response.json({ error: "没有找到这张订单" }, { status: 404 });
     return Response.json({ repair });
   } catch (error) {
@@ -19,7 +19,7 @@ export async function PUT(request, { params }) {
     const { id } = await params;
     const body = await request.json();
     const repair = { ...(body.repair || {}), id };
-    return Response.json(await saveRepairRecord({ repair, client: body.client || null, actor: { isAdmin: staff.isAdmin } }));
+    return Response.json(await saveRepairRecord({ repair, client: body.client || null, actor: { isAdmin: staff.isAdmin, shopId: staff.shopId } }));
   } catch (error) {
     return authErrorResponse(error);
   }
@@ -27,9 +27,9 @@ export async function PUT(request, { params }) {
 
 export async function DELETE(_request, { params }) {
   try {
-    await requireAnyPageAccess(["repairs", "warranties"]);
+    const staff = await requireAnyPageAccess(["repairs", "warranties"]);
     const { id } = await params;
-    return Response.json(await deleteRepairRecord(id));
+    return Response.json(await deleteRepairRecord(id, { shopId: staff.shopId }));
   } catch (error) {
     return authErrorResponse(error);
   }

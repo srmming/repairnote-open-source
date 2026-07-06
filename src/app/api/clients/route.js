@@ -21,7 +21,7 @@ function normalizeClientLevel(level) {
 
 export async function POST(request) {
   try {
-    await requireAnyPageAccess(["clients", "repairs"]);
+    const staff = await requireAnyPageAccess(["clients", "repairs"]);
     const body = await request.json();
     const clientId = body.id || crypto.randomUUID();
     const name = formatClientName(body.name);
@@ -37,12 +37,14 @@ export async function POST(request) {
       address: body.address || "",
       comment: body.comment || ""
     };
+    const owner = await prisma.client.findUnique({ where: { id: clientId }, select: { shopId: true } });
+    if (owner && owner.shopId !== staff.shopId) return Response.json({ error: "没有找到客户" }, { status: 404 });
     const client = await prisma.client.upsert({
       where: { id: clientId },
-      create: { id: clientId, ...payload },
+      create: { id: clientId, shopId: staff.shopId, ...payload },
       update: payload
     });
-    return Response.json({ client, _revisionPatch: await getRevisionPatch(["clients"]) });
+    return Response.json({ client, _revisionPatch: await getRevisionPatch({ keys: ["clients"], shopId: staff.shopId }) });
   } catch (error) {
     return authErrorResponse(error);
   }
@@ -50,16 +52,16 @@ export async function POST(request) {
 
 export async function DELETE(request) {
   try {
-    await requireAnyPageAccess(["clients"]);
+    const staff = await requireAnyPageAccess(["clients"]);
     const body = await request.json();
     const clientId = String(body?.id || "").trim();
     if (!clientId) throwBadRequest("缺少客户");
-    const existing = await prisma.client.findUnique({ where: { id: clientId } });
+    const existing = await prisma.client.findFirst({ where: { id: clientId, shopId: staff.shopId } });
     if (!existing) throwNotFound("没有找到客户");
-    const repairCount = await prisma.repair.count({ where: { clientId } });
+    const repairCount = await prisma.repair.count({ where: { shopId: staff.shopId, clientId } });
     if (repairCount > 0) throwBadRequest("客户已有维修记录，不能删除");
     await prisma.client.delete({ where: { id: clientId } });
-    return Response.json({ ok: true, id: clientId, _revisionPatch: await getRevisionPatch(["clients"]) });
+    return Response.json({ ok: true, id: clientId, _revisionPatch: await getRevisionPatch({ keys: ["clients"], shopId: staff.shopId }) });
   } catch (error) {
     return authErrorResponse(error);
   }

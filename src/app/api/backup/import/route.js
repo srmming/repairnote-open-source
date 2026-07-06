@@ -10,8 +10,8 @@ export async function POST(request) {
     const payload = await request.json();
     const cleanData = withoutImportedUsers(validateBusinessDataShape(payload.data || payload, "备份文件"));
     await createBackupSnapshot({ kind: "safety", reason: "导入前自动备份", staff });
-    await syncFromClientData(cleanData);
-    return Response.json({ ok: true, data: await getBootstrapData() });
+    await syncFromClientData(cleanData, { shopId: staff.shopId });
+    return Response.json({ ok: true, data: await getBootstrapData({ shopId: staff.shopId }) });
   } catch (error) {
     return authErrorResponse(error);
   }

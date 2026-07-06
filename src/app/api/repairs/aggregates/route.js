@@ -3,7 +3,7 @@ import { aggregateRepairs } from "@/lib/data-store";
 
 export async function GET(request) {
   try {
-    await requireAnyPageAccess(["repairs", "warranties"]);
+    const staff = await requireAnyPageAccess(["repairs", "warranties"]);
     const params = new URL(request.url).searchParams;
     const result = await aggregateRepairs({
       q: params.get("q") || "",
@@ -13,7 +13,8 @@ export async function GET(request) {
       end: params.get("end") || "",
       clientId: params.get("clientId") || "",
       sourceRepairId: params.get("sourceRepairId") || "",
-      technicianKey: params.get("technicianKey") || ""
+      technicianKey: params.get("technicianKey") || "",
+      shopId: staff.shopId
     });
     return Response.json(result);
   } catch (error) {

@@ -1,8 +1,9 @@
-import { getCurrentStaff } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { authErrorResponse, requireStaff } from "@/lib/auth";
 
 export async function GET() {
-  const user = await getCurrentStaff();
-  if (!user) return Response.json({ user: null, setupRequired: await prisma.staff.count() === 0 });
-  return Response.json({ user });
+  try {
+    return Response.json({ user: await requireStaff() });
+  } catch (error) {
+    return authErrorResponse(error);
+  }
 }

@@ -10,9 +10,9 @@ export async function GET() {
   try {
     const staff = await requireAnyPageAccess();
     const [data, repairCount, clientCount] = await Promise.all([
-      getBootstrapData({ includeRepairs: false, includeClients: false }),
-      prisma.repair.count(),
-      prisma.client.count()
+      getBootstrapData({ shopId: staff.shopId, includeRepairs: false, includeClients: false }),
+      prisma.repair.count({ where: { shopId: staff.shopId } }),
+      prisma.client.count({ where: { shopId: staff.shopId } })
     ]);
     // 每日自动备份挂在“当天第一次打开系统”上（有当日备份则直接跳过），失败不影响登录。
     ensureDailyAutoBackup({ staff }).catch((error) => {

@@ -3,8 +3,8 @@ import { listBackupSnapshots } from "@/lib/backup-store";
 
 export async function GET() {
   try {
-    await requirePageAccess("backup");
-    return Response.json({ backups: await listBackupSnapshots() });
+    const staff = await requirePageAccess("backup");
+    return Response.json({ backups: await listBackupSnapshots(staff) });
   } catch (error) {
     return authErrorResponse(error);
   }

@@ -3,7 +3,7 @@ import { reportFinance } from "@/lib/report-store";
 
 export async function GET(request) {
   try {
-    await requirePageAccess("finance");
+    const staff = await requirePageAccess("finance");
     const params = new URL(request.url).searchParams;
     const result = await reportFinance({
       start: params.get("start") || "",
@@ -12,7 +12,8 @@ export async function GET(request) {
       today: params.get("today") || "",
       paymentsPage: params.get("paymentsPage") || "1",
       unpaidPage: params.get("unpaidPage") || "1",
-      pageSize: params.get("pageSize") || ""
+      pageSize: params.get("pageSize") || "",
+      shopId: staff.shopId
     });
     return Response.json(result);
   } catch (error) {

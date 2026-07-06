@@ -4,9 +4,9 @@ import { backupFileName, getBackupSnapshot } from "@/lib/backup-store";
 
 export async function GET(_request, { params }) {
   try {
-    await requirePageAccess("backup");
+    const staff = await requirePageAccess("backup");
     const { id } = await params;
-    const snapshot = await getBackupSnapshot(id);
+    const snapshot = await getBackupSnapshot(id, staff);
     const baseName = backupFileName(snapshot);
     return zipResponse({
       json: backupJsonPayload(snapshot.data, { backupId: snapshot.id }),

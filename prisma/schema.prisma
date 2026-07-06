@@ -7,36 +7,79 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Staff {
-  id               String   @id @default(cuid())
-  name             String
-  username         String   @unique
-  email            String   @default("")
-  passwordHash     String   @db.VarChar(255)
-  isAdmin          Boolean  @default(false)
-  pagePermissions  Json
-  sessionTokenHash String?  @db.VarChar(255)
+model Shop {
+  id              String           @id @default(cuid())
+  slug            String           @unique
+  name            String
+  active          Boolean          @default(true)
+  staff           Staff[]
+  sessions        StaffSession[]
+  clients         Client[]
+  brands          Brand[]
+  models          Model[]
+  services        Service[]
+  parts           Part[]
+  technicians     Technician[]
+  attributeGroups AttributeGroup[]
+  attributes      Attribute[]
+  repairs         Repair[]
+  repairItems     RepairItem[]
+  payments        Payment[]
+  settings        Setting[]
+  backups         BackupSnapshot[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+}
+
+model SuperAdmin {
+  id               String    @id @default(cuid())
+  username         String    @unique
+  passwordHash     String    @db.VarChar(255)
+  sessionTokenHash String?   @unique @db.VarChar(255)
   sessionExpiresAt DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
+
+model Staff {
+  id               String         @id @default(cuid())
+  shopId           String
+  name             String
+  username         String
+  email            String         @default("")
+  passwordHash     String         @db.VarChar(255)
+  isAdmin          Boolean        @default(false)
+  pagePermissions  Json
+  sessionTokenHash String?        @db.VarChar(255)
+  sessionExpiresAt DateTime?
+  shop             Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
   sessions         StaffSession[]
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@unique([shopId, username])
+  @@index([shopId])
 }
 
 model StaffSession {
   id        String   @id @default(cuid())
+  shopId    String
   staffId   String
   tokenHash String   @unique @db.VarChar(255)
   expiresAt DateTime
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   staff     Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([staffId])
+  @@index([shopId])
   @@index([expiresAt])
 }
 
 model Client {
   id        String   @id @default(cuid())
+  shopId    String
   name      String
   docType   String   @default("DNI")
   identity  String   @default("")
@@ -45,138 +88,173 @@ model Client {
   address   String   @db.Text
   comment   String   @db.Text
   level     String   @default("VIP")
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   repairs   Repair[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([name])
   @@index([phone])
+  @@index([shopId])
 }
 
 model Brand {
   id        String   @id @default(cuid())
-  name      String   @unique
+  shopId    String
+  name      String
   sortOrder Int      @default(0)
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   models    Model[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@unique([shopId, name])
+  @@index([shopId])
 }
 
 model Model {
   id        String   @id @default(cuid())
+  shopId    String
   brandId   String
   name      String
   sortOrder Int      @default(0)
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   brand     Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([brandId])
+  @@index([shopId])
 }
 
 model Service {
   id          String   @id @default(cuid())
+  shopId      String
   defaultName String   @db.Text
   category    String   @default("")
   zh          String   @db.Text
   es          String   @db.Text
   price       Decimal  @default(0) @db.Decimal(12, 2)
   sortOrder   Int      @default(0)
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@index([shopId])
 }
 
 model Part {
   id          String   @id @default(cuid())
+  shopId      String
   defaultName String   @db.Text
   category    String   @default("")
   zh          String   @db.Text
   es          String   @db.Text
   price       Decimal  @default(0) @db.Decimal(12, 2)
   sortOrder   Int      @default(0)
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@index([shopId])
 }
 
 model Technician {
   id        String   @id @default(cuid())
-  name      String   @unique
+  shopId    String
+  name      String
   phone     String   @default("")
   email     String   @default("")
   color     String   @default("#16a34a")
   active    Boolean  @default(true)
   sortOrder Int      @default(0)
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@unique([shopId, name])
+  @@index([shopId])
 }
 
 model AttributeGroup {
   id         String      @id @default(cuid())
-  name       String      @unique
+  shopId     String
+  name       String
+  shop       Shop        @relation(fields: [shopId], references: [id], onDelete: Cascade)
   attributes Attribute[]
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
+
+  @@unique([shopId, name])
+  @@index([shopId])
 }
 
 model Attribute {
   id          String         @id @default(cuid())
+  shopId      String
   groupId     String
   defaultName String
   zh          String         @default("")
   es          String         @default("")
   sortOrder   Int            @default(0)
+  shop        Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
   group       AttributeGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
   @@index([groupId])
+  @@index([shopId])
 }
 
 model Repair {
-  id              String       @id @default(cuid())
-  ticket          String       @unique
-  clientId        String
-  brand           String       @default("")
-  model           String       @default("")
-  properties      String       @db.Text
-  imei            String       @default("")
-  issue           String       @db.Text
-  internalNote    String       @db.Text
-  passwordType    String       @default("")
-  passwordText    String       @default("")
-  passwordPattern Json
-  status          String       @default("预定")
-  repairTime      String       @default("")
-  warrantyStart   String       @default("")
-  technicianId    String       @default("")
-  technicianName  String       @default("")
-  budget          Decimal      @default(0) @db.Decimal(12, 2)
-  deposit         Decimal      @default(0) @db.Decimal(12, 2)
-  paymentMethod   String       @default("none")
-  discountAmount  Decimal      @default(0) @db.Decimal(12, 2)
-  costAmount      Decimal      @default(0) @db.Decimal(12, 2)
-  frontPhoto      String       @db.LongText
-  backPhoto       String       @db.LongText
-  signatureDataUrl String      @db.LongText
-  signedAt        String       @default("")
-  publicToken     String       @unique @default(cuid())
-  orderType       String       @default("repair")
-  sourceRepairId  String       @default("")
-  warrantyReason  String       @db.Text
-  warrantyDiagnosis String     @db.Text
-  warrantyResolution String    @db.Text
-  warrantyChargeable Boolean   @default(false)
-  statusHistory   Json
-  notificationLog Json
-  searchText      String       @db.Text
-  ticketSort      BigInt       @default(0)
-  client          Client       @relation(fields: [clientId], references: [id], onDelete: Restrict)
-  items           RepairItem[]
-  payments        Payment[]
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  id                 String       @id @default(cuid())
+  shopId             String
+  ticket             String
+  clientId           String
+  brand              String       @default("")
+  model              String       @default("")
+  properties         String       @db.Text
+  imei               String       @default("")
+  issue              String       @db.Text
+  internalNote       String       @db.Text
+  passwordType       String       @default("")
+  passwordText       String       @default("")
+  passwordPattern    Json
+  status             String       @default("预定")
+  repairTime         String       @default("")
+  warrantyStart      String       @default("")
+  technicianId       String       @default("")
+  technicianName     String       @default("")
+  budget             Decimal      @default(0) @db.Decimal(12, 2)
+  deposit            Decimal      @default(0) @db.Decimal(12, 2)
+  paymentMethod      String       @default("none")
+  discountAmount     Decimal      @default(0) @db.Decimal(12, 2)
+  costAmount         Decimal      @default(0) @db.Decimal(12, 2)
+  frontPhoto         String       @db.LongText
+  backPhoto          String       @db.LongText
+  signatureDataUrl   String       @db.LongText
+  signedAt           String       @default("")
+  publicToken        String       @unique @default(cuid())
+  orderType          String       @default("repair")
+  sourceRepairId     String       @default("")
+  warrantyReason     String       @db.Text
+  warrantyDiagnosis  String       @db.Text
+  warrantyResolution String       @db.Text
+  warrantyChargeable Boolean      @default(false)
+  statusHistory      Json
+  notificationLog    Json
+  searchText         String       @db.Text
+  ticketSort         BigInt       @default(0)
+  shop               Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  client             Client       @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  items              RepairItem[]
+  payments           Payment[]
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
 
+  @@unique([shopId, ticket])
   @@index([clientId])
+  @@index([shopId])
   @@index([orderType])
   @@index([sourceRepairId])
   @@index([status])
@@ -192,50 +270,65 @@ model Repair {
 
 model RepairItem {
   id        String   @id @default(cuid())
+  shopId    String
   repairId  String
   name      String   @db.Text
   qty       Decimal  @default(1) @db.Decimal(12, 3)
   price     Decimal  @default(0) @db.Decimal(12, 2)
   cost      Decimal  @default(0) @db.Decimal(12, 2)
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   repair    Repair   @relation(fields: [repairId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([repairId])
+  @@index([shopId])
 }
 
 model Payment {
   id        String   @id @default(cuid())
+  shopId    String
   repairId  String
   amount    Decimal  @default(0) @db.Decimal(12, 2)
   method    String   @default("cash")
   note      String   @default("")
   paidAt    DateTime @default(now())
   createdBy String   @default("")
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   repair    Repair   @relation(fields: [repairId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([repairId])
+  @@index([shopId])
   @@index([paidAt])
   @@index([method])
 }
 
 model Setting {
-  id        String   @id @default("main")
+  id        String   @id @default(cuid())
+  shopId    String
+  key       String   @default("main")
   value     Json
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   updatedAt DateTime @updatedAt
+
+  @@unique([shopId, key])
+  @@index([shopId])
 }
 
 model BackupSnapshot {
   id        String   @id @default(cuid())
+  shopId    String
   kind      String   @default("manual")
   reason    String   @default("")
   data      Json
   counts    Json
   createdBy String   @default("")
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
 
+  @@index([shopId])
   @@index([createdAt])
   @@index([kind])
 }

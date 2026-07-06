@@ -12,7 +12,7 @@ export async function DELETE(request) {
       throw error;
     }
     const body = await request.json();
-    const result = await deleteTechnicianHistory(body?.key || "");
+    const result = await deleteTechnicianHistory(body?.key || "", { shopId: staff.shopId });
     if (result.deleted) console.info(`历史维修师记录删除：${body?.key || ""} 共 ${result.deleted} 单（操作人 ${staff.username || staff.id}）`);
     return Response.json(result);
   } catch (error) {

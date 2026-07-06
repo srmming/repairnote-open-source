@@ -1,6 +1,7 @@
 import crypto from "crypto";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
+import { DEFAULT_SHOP_SLUG, normalizeShopSlug } from "@/lib/shop";
 
 const COOKIE_NAME = "repairnote_session";
 const SESSION_DAYS = 7;
@@ -41,22 +42,37 @@ export function hashToken(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-export async function createSession(staffId) {
+export async function createSession(staff) {
+  const staffRow = typeof staff === "string" ? await prisma.staff.findUnique({ where: { id: staff } }) : staff;
+  if (!staffRow?.shopId) throw new Error("STAFF_SHOP_MISSING");
   const token = crypto.randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
   const tokenHash = hashToken(token);
+  const staffId = staffRow.id;
+  const shopId = staffRow.shopId;
   await prisma.$transaction([
     prisma.staffSession.deleteMany({
       where: { staffId, expiresAt: { lte: new Date() } }
     }),
     prisma.staffSession.create({
-      data: { staffId, tokenHash, expiresAt }
+      data: { staffId, shopId, tokenHash, expiresAt }
     }),
     prisma.staff.update({
       where: { id: staffId },
       data: { sessionTokenHash: tokenHash, sessionExpiresAt: expiresAt }
     })
   ]);
+  await setSessionCookie(token, expiresAt);
+}
+
+export async function createSuperAdminSession(admin) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
+  const tokenHash = hashToken(token);
+  await prisma.superAdmin.update({
+    where: { id: admin.id },
+    data: { sessionTokenHash: tokenHash, sessionExpiresAt: expiresAt }
+  });
   await setSessionCookie(token, expiresAt);
 }
 
@@ -76,30 +92,33 @@ export async function clearSession() {
   const token = jar.get(COOKIE_NAME)?.value;
   if (token) {
     await prisma.staffSession.deleteMany({ where: { tokenHash: hashToken(token) } });
+    await prisma.superAdmin.updateMany({ where: { sessionTokenHash: hashToken(token) }, data: { sessionTokenHash: null, sessionExpiresAt: null } });
   }
   jar.delete(COOKIE_NAME);
 }
 
 export async function getCurrentStaff() {
+  const contextSlug = await currentRequestShopSlug();
   const jar = await cookies();
   const token = jar.get(COOKIE_NAME)?.value;
   if (!token) return null;
   const tokenHash = hashToken(token);
   const session = await prisma.staffSession.findUnique({
     where: { tokenHash },
-    include: { staff: { select: { id: true, name: true, username: true, email: true, isAdmin: true, pagePermissions: true } } }
+    include: { staff: { select: staffSessionSelect() } }
   });
-  if (session?.expiresAt > new Date()) return session.staff;
+  if (session?.expiresAt > new Date()) return staffForContext(session.staff, contextSlug);
 
   if (session) {
     await prisma.staffSession.delete({ where: { id: session.id } });
     return null;
   }
 
-  return prisma.staff.findFirst({
+  const staff = await prisma.staff.findFirst({
     where: { sessionTokenHash: tokenHash, sessionExpiresAt: { gt: new Date() } },
-    select: { id: true, name: true, username: true, email: true, isAdmin: true, pagePermissions: true }
+    select: staffSessionSelect()
   });
+  return staffForContext(staff, contextSlug);
 }
 
 export async function requireStaff() {
@@ -110,6 +129,80 @@ export async function requireStaff() {
     throw error;
   }
   return staff;
+}
+
+export async function getCurrentSuperAdmin() {
+  if (!await isAdminRequestContext()) return null;
+  const jar = await cookies();
+  const token = jar.get(COOKIE_NAME)?.value;
+  if (!token) return null;
+  const admin = await prisma.superAdmin.findFirst({
+    where: { sessionTokenHash: hashToken(token), sessionExpiresAt: { gt: new Date() } },
+    select: { id: true, username: true, createdAt: true, updatedAt: true }
+  });
+  return admin || null;
+}
+
+function staffSessionSelect() {
+  return {
+    id: true,
+    shopId: true,
+    name: true,
+    username: true,
+    email: true,
+    isAdmin: true,
+    pagePermissions: true,
+    shop: { select: { slug: true, active: true } }
+  };
+}
+
+function staffForContext(staff, contextSlug) {
+  if (!staff?.shop?.active) return null;
+  if (!contextSlug) return null;
+  if (staff.shop.slug !== contextSlug) return null;
+  const { shop, ...safeStaff } = staff;
+  return safeStaff;
+}
+
+async function currentRequestShopSlug() {
+  const source = await requestHeaders();
+  const headerSlug = normalizeShopSlug(source.get("x-repairnote-shop-slug"));
+  if (headerSlug) return headerSlug;
+  const referer = source.get("referer");
+  if (referer) {
+    try {
+      return normalizeShopSlug(new URL(referer).pathname.split("/").filter(Boolean)[0]) || DEFAULT_SHOP_SLUG;
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+async function isAdminRequestContext() {
+  const source = await requestHeaders();
+  const referer = source.get("referer");
+  if (!referer) return true;
+  try {
+    const first = new URL(referer).pathname.split("/").filter(Boolean)[0];
+    return first === "admin";
+  } catch {
+    return false;
+  }
+}
+
+async function requestHeaders() {
+  return headers();
+}
+
+export async function requireSuperAdmin() {
+  const admin = await getCurrentSuperAdmin();
+  if (!admin) {
+    const error = new Error("UNAUTHORIZED");
+    error.status = 401;
+    throw error;
+  }
+  return admin;
 }
 
 export function normalizedPagePermissions(staff) {

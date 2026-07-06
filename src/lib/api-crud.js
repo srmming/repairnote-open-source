@@ -26,7 +26,7 @@ export function collectionRoute(resource) {
     async GET() {
       try {
         const staff = await requireResourceAccess(resource, "read");
-        const data = await getBootstrapData();
+        const data = await getBootstrapData({ shopId: staff.shopId });
         if (resource === "staff" && !staff.isAdmin) return Response.json({ error: "只有管理员可查看员工" }, { status: 403 });
         if (resource === "catalog") return Response.json({ brands: data.brands, models: data.models, services: data.services, parts: data.parts });
         return Response.json(data[resourceMap[resource]]);
@@ -39,12 +39,12 @@ export function collectionRoute(resource) {
         const staff = await requireResourceAccess(resource, "write");
         const body = await request.json();
         if (resource === "staff" && !staff.isAdmin) return Response.json({ error: "只有管理员可管理员工" }, { status: 403 });
-        if (resource === "technicians") return Response.json(await syncTechniciansData(body));
-        if (resource === "catalog") return Response.json(await syncCatalogData(body));
-        if (resource === "attributes") return Response.json(await syncAttributesData(body));
-        const data = await getBootstrapData();
+        if (resource === "technicians") return Response.json(await syncTechniciansData(body, { shopId: staff.shopId }));
+        if (resource === "catalog") return Response.json(await syncCatalogData(body, { shopId: staff.shopId }));
+        if (resource === "attributes") return Response.json(await syncAttributesData(body, { shopId: staff.shopId }));
+        const data = await getBootstrapData({ shopId: staff.shopId });
         const next = applyBody(data, resource, body);
-        return Response.json(await syncFromClientData(validateBusinessDataShape(next, "保存数据")));
+        return Response.json(await syncFromClientData(validateBusinessDataShape(next, "保存数据"), { shopId: staff.shopId }));
       } catch (error) {
         return errorResponse(error);
       }

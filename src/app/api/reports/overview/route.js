@@ -3,13 +3,14 @@ import { reportOverview } from "@/lib/report-store";
 
 export async function GET(request) {
   try {
-    await requirePageAccess("reports");
+    const staff = await requirePageAccess("reports");
     const params = new URL(request.url).searchParams;
     const range = getRange(params);
     const result = await reportOverview({
       start: range.start,
       end: range.end,
-      granularity: params.get("granularity") || "day"
+      granularity: params.get("granularity") || "day",
+      shopId: staff.shopId
     });
     return Response.json({ ...result, range: { preset: range.preset, ...result.range } });
   } catch (error) {
