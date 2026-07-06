@@ -411,7 +411,7 @@ export async function aggregateRepairs(params = {}) {
                 ELSE GREATEST(0, (CASE WHEN COALESCE(i.itemsCount, 0) > 0 THEN COALESCE(i.itemsTotal, 0) ELSE r.budget END) - r.discountAmount) END AS charge,
            CASE WHEN COALESCE(i.itemsCostTotal, 0) > 0 THEN i.itemsCostTotal ELSE r.costAmount END AS cost
     FROM Repair r
-    LEFT JOIN (SELECT repairId, COUNT(*) AS itemsCount, SUM(qty * price) AS itemsTotal, SUM(qty * cost) AS itemsCostTotal FROM RepairItem GROUP BY repairId) i ON i.repairId = r.id
+    LEFT JOIN (SELECT repairId, COUNT(*) AS itemsCount, SUM(qty * price) AS itemsTotal, SUM(qty * cost) AS itemsCostTotal FROM RepairItem WHERE shopId = ${shopId} GROUP BY repairId) i ON i.repairId = r.id
     WHERE ${whereSql}`;
 
   const [groups, technicians] = await Promise.all([
