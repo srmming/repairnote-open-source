@@ -85,128 +85,79 @@ export default function ShopEntryPage() {
 
   return (
     <main className={styles.page}>
-      <aside className={styles.hero} aria-hidden="false">
-        <div className={styles.heroContent}>
-          <p className={styles.heroBrand}>{APP_DISPLAY_NAME}</p>
-          <h1 className={styles.heroTitle}>多门店维修管理系统</h1>
-          <p className={styles.heroDesc}>
-            输入门店名称即可进入专属工作台，每家门店数据独立、安全隔离。
-          </p>
-          <ul className={styles.heroFeatures}>
-            <li className={styles.heroFeature}>
-              <span className={styles.heroFeatureIcon}>✓</span>
-              独立门店空间，互不干扰
-            </li>
-            <li className={styles.heroFeature}>
-              <span className={styles.heroFeatureIcon}>✓</span>
-              开单、客户、报表一站管理
-            </li>
-            <li className={styles.heroFeature}>
-              <span className={styles.heroFeatureIcon}>✓</span>
-              数据安全隔离，放心使用
-            </li>
-          </ul>
-        </div>
-        <footer className={styles.footer}>
-          © {new Date().getFullYear()} {APP_DISPLAY_NAME}
-          <span className={styles.footerDot} />
-          每家门店数据独立、安全隔离
-        </footer>
-      </aside>
+      <div
+        className={`${styles.main} ${state === "leaving" ? styles.mainLeaving : ""}`}
+      >
+        <p className={styles.brand}>{APP_DISPLAY_NAME}</p>
 
-      <section className={styles.panel}>
-        <div
-          className={`${styles.card} ${state === "leaving" ? styles.cardLeaving : ""}`}
+        <label htmlFor="shop-slug" className={styles.label}>
+          输入门店名称
+        </label>
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            go(value);
+          }}
+          className={styles.form}
         >
-          <div className={styles.brandBlock}>
-            <div className={styles.brandRow}>
-              <div className={styles.monogram} aria-hidden>
-                rm
-              </div>
-              <div>
-                <h1 className={styles.brand}>{APP_DISPLAY_NAME}</h1>
-                <p className={styles.tagline}>多门店维修管理系统</p>
-              </div>
-            </div>
+          <div
+            className={`${styles.inputWrap} ${state === "error" ? styles.inputWrapError : ""}`}
+          >
+            <span className={styles.inputPrefix}>/</span>
+            <input
+              id="shop-slug"
+              ref={inputRef}
+              value={value}
+              onChange={(e) => {
+                setValue(e.target.value);
+                if (state === "error") setState("idle");
+              }}
+              placeholder="tienda1"
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              className={styles.input}
+              disabled={busy}
+            />
           </div>
 
-          <div className={styles.divider} aria-hidden />
+          <button type="submit" className={styles.button} disabled={busy}>
+            <span className={styles.buttonInner}>
+              {state === "checking" && <span className={styles.spinner} />}
+              {state === "checking"
+                ? "查找门店…"
+                : state === "leaving"
+                  ? "正在进入…"
+                  : "进入"}
+            </span>
+          </button>
+        </form>
 
-          <label htmlFor="shop-slug" className={styles.label}>
-            输入你的门店名称
-          </label>
+        <p
+          role="alert"
+          className={`${styles.error} ${state !== "error" ? styles.errorHidden : ""}`}
+        >
+          {errorMsg || " "}
+        </p>
 
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              go(value);
-            }}
-            className={styles.form}
-          >
-            <div
-              className={`${styles.inputWrap} ${state === "error" ? styles.inputWrapError : ""}`}
-            >
-              <span className={styles.inputPrefix}>/</span>
-              <input
-                id="shop-slug"
-                ref={inputRef}
-                value={value}
-                onChange={(e) => {
-                  setValue(e.target.value);
-                  if (state === "error") setState("idle");
-                }}
-                placeholder="tienda1"
-                autoComplete="off"
-                autoCapitalize="none"
-                spellCheck={false}
-                className={styles.input}
+        {recentShops.length > 0 && (
+          <div className={styles.recent}>
+            <span className={styles.recentLabel}>最近进入：</span>
+            {recentShops.map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => go(s)}
+                className={styles.recentChip}
                 disabled={busy}
-              />
-            </div>
-
-            <button type="submit" className={styles.button} disabled={busy}>
-              <span className={styles.buttonInner}>
-                {state === "checking" && <span className={styles.spinner} />}
-                {state === "checking"
-                  ? "查找门店…"
-                  : state === "leaving"
-                    ? "正在进入…"
-                    : "进入门店 →"}
-              </span>
-            </button>
-          </form>
-
-          <p
-            role="alert"
-            className={`${styles.error} ${state !== "error" ? styles.errorHidden : ""}`}
-          >
-            {errorMsg || " "}
-          </p>
-
-          {recentShops.length > 0 && (
-            <div className={styles.recent}>
-              <span className={styles.recentLabel}>最近进入：</span>
-              {recentShops.map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  onClick={() => go(s)}
-                  className={styles.recentChip}
-                  disabled={busy}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <footer className={styles.panelFooter}>
-          © {new Date().getFullYear()} {APP_DISPLAY_NAME}
-          <span className={styles.footerDot} />
-          每家门店数据独立、安全隔离
-        </footer>
-      </section>
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
     </main>
   );
 }
