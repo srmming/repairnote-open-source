@@ -918,11 +918,12 @@ function revisionPart(key, value) {
 
 export async function replaceBusinessData(data, options = {}) {
   const shopId = await currentShopId(options);
-  const attributes = Array.isArray(data.attributes) ? data.attributes : [];
-  const settings = { ...defaultSettings, ...(data.settings || {}) };
-  const clientById = new Map((data.clients || []).map((client) => [client.id, { ...client, name: clientNameForSave(client.name) }]));
-  const ticketById = new Map((data.repairs || []).map((repair, index) => [repair.id, repairTicket(repair, index)]));
-  const preserveItemIds = (data.repairs || []).filter((repair) => repair?.id && repair.itemsLoaded === false).map((repair) => repair.id);
+  const importData = await remapImportConflicts(data, shopId);
+  const attributes = Array.isArray(importData.attributes) ? importData.attributes : [];
+  const settings = { ...defaultSettings, ...(importData.settings || {}) };
+  const clientById = new Map((importData.clients || []).map((client) => [client.id, { ...client, name: clientNameForSave(client.name) }]));
+  const ticketById = new Map((importData.repairs || []).map((repair, index) => [repair.id, repairTicket(repair, index)]));
+  const preserveItemIds = (importData.repairs || []).filter((repair) => repair?.id && repair.itemsLoaded === false).map((repair) => repair.id);
   const [preservedItems, preservedRepairs] = preserveItemIds.length
     ? await Promise.all([
       prisma.repairItem.findMany({ where: { shopId, repairId: { in: preserveItemIds } }, orderBy: { createdAt: "asc" } }),
@@ -950,8 +951,8 @@ export async function replaceBusinessData(data, options = {}) {
     await tx.client.deleteMany({ where: { shopId } });
     if (options.replaceStaff) await tx.staff.deleteMany({ where: { shopId } });
 
-    if (options.replaceStaff && Array.isArray(data.users)) {
-      for (const user of data.users) {
+    if (options.replaceStaff && Array.isArray(importData.users)) {
+      for (const user of importData.users) {
         await tx.staff.create({
           data: {
             id: user.id,
@@ -967,13 +968,13 @@ export async function replaceBusinessData(data, options = {}) {
         });
       }
     }
-    if (!options.replaceStaff && Array.isArray(data.users)) {
+    if (!options.replaceStaff && Array.isArray(importData.users)) {
       const currentStaff = await tx.staff.findMany({ where: { shopId } });
-      const nextIds = new Set(data.users.map((user) => user.id).filter(Boolean));
+      const nextIds = new Set(importData.users.map((user) => user.id).filter(Boolean));
       for (const existing of currentStaff) {
         if (!nextIds.has(existing.id) && currentStaff.length > 1) await tx.staff.delete({ where: { id: existing.id } });
       }
-      for (const user of data.users) {
+      for (const user of importData.users) {
         const existing = user.id ? await tx.staff.findFirst({ where: { id: user.id, shopId } }) : null;
         if (!user.id && !user.password) {
           throwBadRequest("新增员工必须设置密码");
@@ -986,22 +987,22 @@ export async function replaceBusinessData(data, options = {}) {
       }
     }
 
-    for (const client of data.clients || []) {
+    for (const client of importData.clients || []) {
       await tx.client.create({ data: { shopId, ...pick(client, ["id", "docType", "identity", "email", "phone", "address", "comment"]), name: clientNameForSave(client.name), level: normalizeClientLevel(client.level), ...timestamps(client) } });
     }
-    for (const [index, brand] of (data.brands || []).entries()) {
+    for (const [index, brand] of (importData.brands || []).entries()) {
       await tx.brand.create({ data: { shopId, ...pick(brand, ["id", "name"]), sortOrder: dbSortOrder(brand.sortOrder, index), ...timestamps(brand) } });
     }
-    for (const [index, model] of (data.models || []).entries()) {
+    for (const [index, model] of (importData.models || []).entries()) {
       await tx.model.create({ data: { shopId, ...pick(model, ["id", "brandId", "name"]), sortOrder: dbSortOrder(model.sortOrder, index), ...timestamps(model) } });
     }
-    for (const [index, service] of (data.services || []).entries()) {
+    for (const [index, service] of (importData.services || []).entries()) {
       await tx.service.create({ data: { shopId, ...pick(service, ["id", "defaultName", "category", "zh", "es"]), category: service.category || "", price: service.price || 0, sortOrder: dbSortOrder(service.sortOrder, index), ...timestamps(service) } });
     }
-    for (const [index, part] of (data.parts || []).entries()) {
+    for (const [index, part] of (importData.parts || []).entries()) {
       await tx.part.create({ data: { shopId, ...pick(part, ["id", "defaultName", "category", "zh", "es"]), category: part.category || "", price: part.price || 0, sortOrder: dbSortOrder(part.sortOrder, index), ...timestamps(part) } });
     }
-    for (const [index, technician] of (data.technicians || []).entries()) {
+    for (const [index, technician] of (importData.technicians || []).entries()) {
       await tx.technician.create({
         data: {
           id: technician.id,
@@ -1016,11 +1017,11 @@ export async function replaceBusinessData(data, options = {}) {
         }
       });
     }
-    const groupNames = [...new Set(attributes.map((item) => item.groupName || "其他"))];
+    const groupRows = attributeGroupRows(attributes);
     const groupIds = {};
-    for (const groupName of groupNames.length ? groupNames : ["颜色", "其他"]) {
-      const group = await tx.attributeGroup.create({ data: { shopId, name: groupName } });
-      groupIds[groupName] = group.id;
+    for (const groupRow of groupRows.length ? groupRows : [{ name: "颜色" }, { name: "其他" }]) {
+      const group = await tx.attributeGroup.create({ data: { ...(groupRow.id ? { id: groupRow.id } : {}), shopId, name: groupRow.name } });
+      groupIds[groupRow.name] = group.id;
     }
     for (const [index, attr] of attributes.entries()) {
       await tx.attribute.create({
@@ -1036,7 +1037,7 @@ export async function replaceBusinessData(data, options = {}) {
         }
       });
     }
-    for (const [index, repair] of (data.repairs || []).entries()) {
+    for (const [index, repair] of (importData.repairs || []).entries()) {
       const preservedRepair = repair.itemsLoaded === false ? preservedRepairById.get(repair.id) : null;
       const repairData = preservedRepair ? mergeCompactRepairForReplace(preservedRepair, repair) : repair;
       const repairItems = repair.itemsLoaded === false ? (preservedItemsByRepair.get(repair.id) || []) : (repair.items || []);
@@ -1426,6 +1427,89 @@ export async function ensureDefaultSettings() {
 async function currentShopId(options = {}) {
   if (options.shopId) return options.shopId;
   return (await ensureDefaultShop()).id;
+}
+
+async function remapImportConflicts(data, shopId) {
+  const collisions = {
+    users: await otherShopIds(prisma.staff, ids(data.users), shopId),
+    clients: await otherShopIds(prisma.client, ids(data.clients), shopId),
+    brands: await otherShopIds(prisma.brand, ids(data.brands), shopId),
+    models: await otherShopIds(prisma.model, ids(data.models), shopId),
+    services: await otherShopIds(prisma.service, ids(data.services), shopId),
+    parts: await otherShopIds(prisma.part, ids(data.parts), shopId),
+    technicians: await otherShopIds(prisma.technician, ids(data.technicians), shopId),
+    attributeGroups: await otherShopIds(prisma.attributeGroup, ids(data.attributes, "groupId"), shopId),
+    attributes: await otherShopIds(prisma.attribute, ids(data.attributes), shopId),
+    repairs: await otherShopIds(prisma.repair, ids(data.repairs), shopId),
+    repairItems: await otherShopIds(prisma.repairItem, nestedIds(data.repairs, "items"), shopId),
+    payments: await otherShopIds(prisma.payment, nestedIds(data.repairs, "payments"), shopId),
+    publicTokens: await otherShopRepairPublicTokens(data.repairs, shopId)
+  };
+  const maps = Object.fromEntries(Object.entries(collisions).map(([key, values]) => [key, idRemap(values)]));
+  if (!Object.values(maps).some((map) => map.size)) return data;
+
+  const users = mapRows(data.users, maps.users);
+  const clients = mapRows(data.clients, maps.clients);
+  const brands = mapRows(data.brands, maps.brands);
+  const models = mapRows(data.models, maps.models, (row) => ({ brandId: mapValue(maps.brands, row.brandId) }));
+  const services = mapRows(data.services, maps.services);
+  const parts = mapRows(data.parts, maps.parts);
+  const technicians = mapRows(data.technicians, maps.technicians);
+  const attributes = mapRows(data.attributes, maps.attributes, (row) => ({ groupId: mapValue(maps.attributeGroups, row.groupId) }));
+  const repairs = Array.isArray(data.repairs) ? data.repairs.map((repair) => ({
+    ...repair,
+    id: mapValue(maps.repairs, repair.id),
+    clientId: mapValue(maps.clients, repair.clientId),
+    technicianId: mapValue(maps.technicians, repair.technicianId),
+    sourceRepairId: mapValue(maps.repairs, repair.sourceRepairId),
+    publicToken: mapValue(maps.publicTokens, repair.publicToken),
+    items: Array.isArray(repair.items) ? mapRows(repair.items, maps.repairItems) : repair.items,
+    payments: Array.isArray(repair.payments) ? mapRows(repair.payments, maps.payments) : repair.payments
+  })) : data.repairs;
+  return { ...data, users, clients, brands, models, services, parts, technicians, attributes, repairs };
+}
+
+async function otherShopIds(model, idValues, shopId) {
+  const values = [...new Set(idValues.filter(Boolean))];
+  if (!values.length) return new Set();
+  const rows = await model.findMany({ where: { id: { in: values }, shopId: { not: shopId } }, select: { id: true } });
+  return new Set(rows.map((row) => row.id));
+}
+
+async function otherShopRepairPublicTokens(repairs = [], shopId) {
+  const values = [...new Set((repairs || []).map((repair) => repair?.publicToken).filter(Boolean))];
+  if (!values.length) return new Set();
+  const rows = await prisma.repair.findMany({ where: { publicToken: { in: values }, shopId: { not: shopId } }, select: { publicToken: true } });
+  return new Set(rows.map((row) => row.publicToken));
+}
+
+function idRemap(values) {
+  return new Map([...values].map((value) => [value, cryptoId()]));
+}
+
+function mapRows(rows, map, extra = () => ({})) {
+  return Array.isArray(rows) ? rows.map((row) => ({ ...row, id: mapValue(map, row.id), ...extra(row) })) : rows;
+}
+
+function mapValue(map, value) {
+  return value && map.has(value) ? map.get(value) : value;
+}
+
+function ids(rows, key = "id") {
+  return Array.isArray(rows) ? rows.map((row) => row?.[key]) : [];
+}
+
+function nestedIds(rows, key) {
+  return Array.isArray(rows) ? rows.flatMap((row) => ids(row?.[key])) : [];
+}
+
+function attributeGroupRows(attributes = []) {
+  const byName = new Map();
+  for (const attr of attributes) {
+    const name = attr?.groupName || "其他";
+    if (!byName.has(name)) byName.set(name, { id: attr?.groupId || "", name });
+  }
+  return [...byName.values()];
 }
 
 function pick(source, keys) {
