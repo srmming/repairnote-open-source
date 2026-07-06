@@ -26,7 +26,8 @@
     "mysql:setup": "node scripts/mysql-setup.mjs",
     "plesk:setup": "node scripts/plesk-setup.mjs",
     "plesk:pack": "node scripts/package-plesk.mjs",
-    "plesk:start": "node server.js"
+    "plesk:start": "node server.js",
+    "db:baseline": "prisma migrate resolve --applied 20260702112123_init_baseline_with_technician_indexes"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
