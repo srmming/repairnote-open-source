@@ -340,10 +340,17 @@
     transform 0.12s ease;
 }
 
-.recentChip:hover {
+.recentChip:hover:not(:disabled) {
   background: rgba(15, 46, 36, 0.06);
   border-color: rgba(15, 46, 36, 0.35);
   transform: translateY(-1px);
+}
+
+.recentChip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  color: rgba(15, 46, 36, 0.45);
+  border-color: rgba(15, 46, 36, 0.1);
 }
 
 .footer {

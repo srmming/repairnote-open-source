@@ -29,6 +29,7 @@ export default function ShopEntryPage() {
   const [errorMsg, setErrorMsg] = useState("");
   const [recentShops, setRecentShops] = useState([]);
   const inputRef = useRef(null);
+  const inFlightRef = useRef(false);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -40,22 +41,27 @@ export default function ShopEntryPage() {
 
   const go = useCallback(
     async (rawSlug) => {
+      if (inFlightRef.current) return;
+
       const slug = normalizeSlug(rawSlug);
       if (!slug) {
         setState("error");
         setErrorMsg("请输入门店名称 / Introduce el nombre de la tienda");
         return;
       }
+      inFlightRef.current = true;
       setState("checking");
       setErrorMsg("");
       try {
         const shop = await lookupShop(slug);
         if (!shop.exists) {
+          inFlightRef.current = false;
           setState("error");
           setErrorMsg(`找不到门店「${slug}」，请检查拼写`);
           return;
         }
         if (shop.active === false) {
+          inFlightRef.current = false;
           setState("error");
           setErrorMsg("该门店已停用，请联系管理员");
           return;
@@ -67,6 +73,7 @@ export default function ShopEntryPage() {
         setState("leaving");
         window.location.assign(`/${slug}`);
       } catch {
+        inFlightRef.current = false;
         setState("error");
         setErrorMsg("网络异常，请稍后再试");
       }
@@ -185,6 +192,7 @@ export default function ShopEntryPage() {
                   type="button"
                   onClick={() => go(s)}
                   className={styles.recentChip}
+                  disabled={busy}
                 >
                   {s}
                 </button>
