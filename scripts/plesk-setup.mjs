@@ -36,8 +36,9 @@ function run(command, args) {
 console.log("RepairNOTE Plesk 初始化：使用 MySQL/MariaDB 数据库");
 console.log("默认管理员：admin / admin123（如已存在员工账号，不会覆盖）");
 
-run("npx", ["prisma", "migrate", "deploy", "--schema", "prisma/schema.prisma"]);
 run("npx", ["prisma", "generate", "--schema", "prisma/schema.prisma"]);
+run("node", ["scripts/prisma-baseline.mjs"]);
+run("npx", ["prisma", "migrate", "deploy", "--schema", "prisma/schema.prisma"]);
 run("npx", ["prisma", "db", "seed", "--schema", "prisma/schema.prisma"]);
 run("npx", ["next", "build"]);
 

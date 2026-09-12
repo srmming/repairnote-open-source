@@ -1,8 +1,9 @@
 import { chromium } from "playwright";
 
 const baseUrl = process.env.BASE_URL || "http://localhost:3000";
-const smokeUsername = process.env.SMOKE_USERNAME || "ming";
-const smokePassword = process.env.SMOKE_PASSWORD || "123456";
+const defaultLocalLogin = process.env.NODE_ENV === "production" ? ["admin", "admin123"] : ["ming", "123456"];
+const smokeUsername = process.env.SMOKE_USERNAME || process.env.REPAIRNOTE_ADMIN_USERNAME || defaultLocalLogin[0];
+const smokePassword = process.env.SMOKE_PASSWORD || process.env.REPAIRNOTE_ADMIN_PASSWORD || defaultLocalLogin[1];
 const suffix = String(Date.now()).slice(-6);
 const results = [];
 

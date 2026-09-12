@@ -86,7 +86,7 @@ export function convertExternalHistoryData(payload, options = {}) {
       backPhoto: "",
       signatureDataUrl: "",
       signedAt: "",
-      publicToken: externalId("token", externalRepair.uuid || repairId),
+      publicToken: randomPublicToken(),
       orderType: "repair",
       sourceRepairId: "",
       warrantyReason: "",
@@ -304,6 +304,10 @@ function externalId(type, value) {
   const safe = source.replace(/[^a-zA-Z0-9_-]/g, "-");
   const token = safe.length > 48 ? stableHash(source) : safe;
   return `${EXTERNAL_PREFIX}-${type}-${token}`;
+}
+
+function randomPublicToken() {
+  return `${EXTERNAL_PREFIX}-token-${crypto.randomUUID()}`;
 }
 
 function stableHash(parts) {

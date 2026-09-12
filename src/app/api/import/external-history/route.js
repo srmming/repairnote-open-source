@@ -39,7 +39,7 @@ export async function POST(request) {
       error.status = 409;
       throw error;
     }
-    await syncFromClientData(merged.data);
+    await syncFromClientData(merged.data, { expectedRevision: currentRevision, preserveUpdatedAt: true });
 
     return Response.json({
       ok: true,

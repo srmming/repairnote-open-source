@@ -51,10 +51,6 @@ export async function createSession(staffId) {
     }),
     prisma.staffSession.create({
       data: { staffId, tokenHash, expiresAt }
-    }),
-    prisma.staff.update({
-      where: { id: staffId },
-      data: { sessionTokenHash: tokenHash, sessionExpiresAt: expiresAt }
     })
   ]);
   await setSessionCookie(token, expiresAt);
@@ -75,7 +71,14 @@ export async function clearSession() {
   const jar = await cookies();
   const token = jar.get(COOKIE_NAME)?.value;
   if (token) {
-    await prisma.staffSession.deleteMany({ where: { tokenHash: hashToken(token) } });
+    const tokenHash = hashToken(token);
+    await prisma.$transaction([
+      prisma.staffSession.deleteMany({ where: { tokenHash } }),
+      prisma.staff.updateMany({
+        where: { sessionTokenHash: tokenHash },
+        data: { sessionTokenHash: null, sessionExpiresAt: null }
+      })
+    ]);
   }
   jar.delete(COOKIE_NAME);
 }
@@ -95,11 +98,7 @@ export async function getCurrentStaff() {
     await prisma.staffSession.delete({ where: { id: session.id } });
     return null;
   }
-
-  return prisma.staff.findFirst({
-    where: { sessionTokenHash: tokenHash, sessionExpiresAt: { gt: new Date() } },
-    select: { id: true, name: true, username: true, email: true, isAdmin: true, pagePermissions: true }
-  });
+  return null;
 }
 
 export async function requireStaff() {

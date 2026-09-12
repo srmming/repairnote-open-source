@@ -1,10 +1,10 @@
 import { chromium } from "playwright";
 
 const baseUrl = process.env.BASE_URL;
-const password = process.env.REPAIRNOTE_TEST_PASSWORD;
+const username = process.env.SMOKE_USERNAME || process.env.REPAIRNOTE_ADMIN_USERNAME || "admin";
+const password = process.env.SMOKE_PASSWORD || process.env.REPAIRNOTE_TEST_PASSWORD || process.env.REPAIRNOTE_ADMIN_PASSWORD || "admin123";
 
 if (!baseUrl) throw new Error("BASE_URL is required");
-if (!password) throw new Error("REPAIRNOTE_TEST_PASSWORD is required");
 
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1366, height: 900 } });
@@ -13,7 +13,7 @@ page.setDefaultTimeout(12000);
 
 try {
   await page.goto(baseUrl);
-  await page.getByPlaceholder("账号").fill("ming");
+  await page.getByPlaceholder("账号").fill(username);
   await page.getByPlaceholder("密码").fill(password);
   await page.getByRole("button", { name: "登录" }).click();
   await Promise.race([

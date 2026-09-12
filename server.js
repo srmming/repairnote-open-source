@@ -33,7 +33,7 @@ if (!process.env.DATABASE_URL || !process.env.DATABASE_URL.startsWith("mysql://"
   process.exit(1);
 }
 
-const port = Number.parseInt(process.env.PORT || "3000", 10);
+const port = Number.parseInt(process.env.REPAIRNOTE_PORT || process.env.PORT || "3000", 10);
 const hostname = "0.0.0.0";
 const app = next({ dev: false, hostname, port });
 const handle = app.getRequestHandler();

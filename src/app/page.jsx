@@ -1668,7 +1668,8 @@ export default function AppPage() {
 
     saveQueueRef.current = saveQueueRef.current.catch(() => {}).then(async () => {
       try {
-        const saved = await apiJson(`/api/repairs/${encodeURIComponent(nextRepair.id)}`, "PUT", { repair: nextRepair, client: nextClient });
+        const currentRepair = findRepair(dataRef.current, nextRepair.id) || nextRepair;
+        const saved = await apiJson(`/api/repairs/${encodeURIComponent(nextRepair.id)}`, "PUT", { repair: { ...nextRepair, updatedAt: currentRepair.updatedAt || nextRepair.updatedAt }, client: nextClient });
         const savedRepair = normalizeRepairDraft(saved.repair || nextRepair);
         const nextData = mergeRepairAndClient(dataRef.current, savedRepair, saved.client || nextClient, saved._revision);
         const nextConfirmed = mergeRepairAndClient(confirmedDataRef.current, savedRepair, saved.client || nextClient, saved._revision);
@@ -1695,7 +1696,8 @@ export default function AppPage() {
 
     saveQueueRef.current = saveQueueRef.current.catch(() => {}).then(async () => {
       try {
-        const saved = await apiJson(`/api/repairs/${encodeURIComponent(repairId)}`, "DELETE", {});
+        const currentRepair = findRepair(confirmedDataRef.current, repairId) || findRepair(dataRef.current, repairId);
+        const saved = await apiJson(`/api/repairs/${encodeURIComponent(repairId)}`, "DELETE", { updatedAt: currentRepair?.updatedAt || "" });
         const nextData = removeRepairFromData(dataRef.current, repairId, saved._revision);
         const nextConfirmed = removeRepairFromData(confirmedDataRef.current, repairId, saved._revision);
         confirmedDataRef.current = nextConfirmed;
@@ -4748,10 +4750,6 @@ function RepairForm({ data, session, saveRepairRecord, deleteRepairRecord, navig
     setClientDropdownOpen("");
     if (client.level === "黑名单") toast(t("blacklistToast"));
   };
-  const selectClientName = (name) => {
-    setRepairDraft({ ...draft, clientId: "", clientName: formatClientName(name) });
-    setClientDropdownOpen("");
-  };
   const appendCatalog = (type, itemId) => {
     const collection = catalogCollectionForTab(type);
     const item = data[collection].find((entry) => entry.id === itemId);
@@ -5188,25 +5186,9 @@ function RepairForm({ data, session, saveRepairRecord, deleteRepairRecord, navig
     toast(ok ? t("receiptImageSaved") : t("receiptImageFailed"));
   };
 
-  const clientNameSuggestions = [...new Set((data.clients || [])
-    .map((client) => String(client.name || "").trim())
-    .filter(Boolean)
-    .filter((name) => !normalizedClientSearch || name.toLowerCase().includes(normalizedClientSearch))
-  )].slice(0, 8);
   const renderClientDropdownMenu = (source) => clientDropdownOpen === source ? (
     <div className="client-dropdown-menu">
-      {source === "name" ? (
-        clientNameSuggestions.length ? clientNameSuggestions.map((name) => (
-          <ActionSurface
-            key={name}
-            className="client-dropdown-option"
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => selectClientName(name)}
-          >
-            <span className="client-dropdown-main"><b>{name}</b><em>{t("clientName")}</em></span>
-          </ActionSurface>
-        )) : <div className="client-dropdown-empty">{t("noData")}</div>
-      ) : clientMatches.length ? clientMatches.map((client) => (
+      {clientMatches.length ? clientMatches.map((client) => (
         <ActionSurface
           key={client.id}
           className="client-dropdown-option"
@@ -6936,6 +6918,10 @@ function mergeRepairAndClient(data, repair, client = null, revision = data._revi
 
 function removeRepairFromData(data, repairId, revision = data._revision) {
   return { ...data, repairs: (data.repairs || []).filter((repair) => repair.id !== repairId), _revision: revision || data._revision };
+}
+
+function findRepair(data, repairId) {
+  return (data?.repairs || []).find((repair) => repair.id === repairId);
 }
 
 function modalResource(type) {

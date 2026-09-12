@@ -50,6 +50,16 @@ function isOrderLockedRecord(repair, settings = {}) {
   }
   return true;
 }
+function assertFreshRepair(existing, expectedUpdatedAt) {
+  if (!existing || !expectedUpdatedAt) return;
+  const expected = validDate(expectedUpdatedAt);
+  if (!expected) return;
+  if (existing.updatedAt.getTime() !== expected.getTime()) {
+    const error = new Error("数据已被更新，请刷新后重试");
+    error.status = 409;
+    throw error;
+  }
+}
 async function orderLockSettings() {
   const setting = await prisma.setting.findUnique({ where: { id: "main" } });
   const value = setting?.value || {};
@@ -105,6 +115,24 @@ export async function getRepairById(id) {
 }
 
 const SEARCH_PAGE_SIZE = 20;
+const STATUS_ALIASES = {
+  预定: ["预定", "reserva", "Reserva", "待开始", "En espera", "待检测"],
+  预定到货: ["预定到货", "预定已到货", "Reserva recibida", "Reserva recibido", "Reserva llegado", "等客户确认"],
+  维修中: ["维修中", "Reparando", "处理中"],
+  完成: ["完成", "Terminado", "Finalizado", "已完成"],
+  已取走: ["已取走", "Entregado"],
+  取消: ["取消", "Cerrado", "Cancelar", "关闭", "拒保"]
+};
+
+function statusWhere(status) {
+  const aliases = STATUS_ALIASES[normalizeStatus(status)] || [status];
+  return { status: { in: aliases } };
+}
+
+function statusRawSql(status) {
+  const aliases = STATUS_ALIASES[normalizeStatus(status)] || [status];
+  return Prisma.sql`r.status IN (${Prisma.join(aliases)})`;
+}
 
 // 服务端维修单搜索：searchText 子串匹配（与前端“包含”一致）+ 结构化过滤（走索引）+ 服务端分页。
 // 返回当页序列化维修单、总数、按状态/类型的计数，用于列表页直接渲染，避免前端全表扫描 4 万单。
@@ -130,7 +158,7 @@ export async function searchRepairs(params = {}) {
   // repairTime 形如 "YYYY-MM-DD HH:mm"；"~"(0x7E) 大于空格与数字，故 <= end+"~" 含 end 当天全部时间且不含次日。
   if (end) baseFilters.push({ repairTime: { lte: `${end}~` } });
   const baseWhere = baseFilters.length ? { AND: baseFilters } : {};
-  const where = status ? { AND: [...baseFilters, { status }] } : baseWhere;
+  const where = status ? { AND: [...baseFilters, statusWhere(status)] } : baseWhere;
 
   const [total, statusGroups, typeGroups, pageRows] = await Promise.all([
     prisma.repair.count({ where }),
@@ -382,7 +410,7 @@ export async function aggregateRepairs(params = {}) {
 
   const conds = [Prisma.sql`1 = 1`];
   if (q) conds.push(Prisma.sql`r.searchText LIKE ${`%${likePattern(q)}%`}`);
-  if (status) conds.push(Prisma.sql`r.status = ${status}`);
+  if (status) conds.push(statusRawSql(status));
   if (orderType) conds.push(Prisma.sql`r.orderType = ${orderType}`);
   if (clientId) conds.push(Prisma.sql`r.clientId = ${clientId}`);
   if (sourceRepairId) conds.push(Prisma.sql`r.sourceRepairId = ${sourceRepairId}`);
@@ -630,6 +658,7 @@ export async function saveRepairRecord({ repair, client, actor } = {}) {
     }
 
     const existing = await tx.repair.findUnique({ where: { id: repair.id }, include: { items: true, payments: true } });
+    assertFreshRepair(existing, repair.updatedAt);
     // 服务端强制：库里这张单若已锁定（已取走/取消且未解锁），只有管理员且开启「允许解除订单锁定」才能修改，
     // 防止普通员工绕过前端直接 PUT 篡改已锁定订单。
     if (existing && isOrderLockedRecord(existing, lockSettings) && !(actor?.isAdmin && lockSettings.allowOrderUnlock)) {
@@ -671,11 +700,18 @@ export async function saveRepairRecord({ repair, client, actor } = {}) {
   };
 }
 
-export async function deleteRepairRecord(id) {
+export async function deleteRepairRecord(id, options = {}) {
   const existing = await prisma.repair.findUnique({ where: { id } });
   if (!existing) {
     const error = new Error("没有找到这张订单");
     error.status = 404;
+    throw error;
+  }
+  assertFreshRepair(existing, options.updatedAt);
+  const lockSettings = await orderLockSettings();
+  if (isOrderLockedRecord(existing, lockSettings) && !(options.actor?.isAdmin && lockSettings.allowOrderUnlock)) {
+    const error = new Error("订单已锁定，只有管理员可以解除锁定后再删除");
+    error.status = 403;
     throw error;
   }
   if ((existing.orderType || "repair") !== "warranty") {
@@ -838,35 +874,35 @@ function validPaymentDate(value) {
 
 const REVISION_KEYS = ["users", "technicians", "clients", "brands", "models", "services", "parts", "attributes", "repairs", "settings"];
 
-export async function getBusinessRevision() {
-  const patch = await getRevisionPatch(REVISION_KEYS);
+export async function getBusinessRevision(db = prisma) {
+  const patch = await getRevisionPatch(REVISION_KEYS, db);
   return REVISION_KEYS.map((key) => patch[key]).join("|");
 }
 
-export async function getRevisionPatch(keys = []) {
+export async function getRevisionPatch(keys = [], db = prisma) {
   const uniqueKeys = [...new Set(keys)].filter((key) => REVISION_KEYS.includes(key));
-  const entries = await Promise.all(uniqueKeys.map(async (key) => [key, await getRevisionSegment(key)]));
+  const entries = await Promise.all(uniqueKeys.map(async (key) => [key, await getRevisionSegment(key, db)]));
   return Object.fromEntries(entries);
 }
 
-async function getRevisionSegment(key) {
-  if (key === "users") return revisionPart("users", await revisionAggregate(prisma.staff));
-  if (key === "technicians") return revisionPart("technicians", await revisionAggregate(prisma.technician));
-  if (key === "clients") return revisionPart("clients", await revisionAggregate(prisma.client));
-  if (key === "brands") return revisionPart("brands", await revisionAggregate(prisma.brand));
-  if (key === "models") return revisionPart("models", await revisionAggregate(prisma.model));
-  if (key === "services") return revisionPart("services", await revisionAggregate(prisma.service));
-  if (key === "parts") return revisionPart("parts", await revisionAggregate(prisma.part));
-  if (key === "attributes") return revisionPart("attributes", await revisionAggregate(prisma.attribute));
+async function getRevisionSegment(key, db = prisma) {
+  if (key === "users") return revisionPart("users", await revisionAggregate(db.staff));
+  if (key === "technicians") return revisionPart("technicians", await revisionAggregate(db.technician));
+  if (key === "clients") return revisionPart("clients", await revisionAggregate(db.client));
+  if (key === "brands") return revisionPart("brands", await revisionAggregate(db.brand));
+  if (key === "models") return revisionPart("models", await revisionAggregate(db.model));
+  if (key === "services") return revisionPart("services", await revisionAggregate(db.service));
+  if (key === "parts") return revisionPart("parts", await revisionAggregate(db.part));
+  if (key === "attributes") return revisionPart("attributes", await revisionAggregate(db.attribute));
   if (key === "settings") {
-    const settings = await prisma.setting.findUnique({ where: { id: "main" }, select: { updatedAt: true } });
+    const settings = await db.setting.findUnique({ where: { id: "main" }, select: { updatedAt: true } });
     return `settings:${settings?.updatedAt?.toISOString?.() || ""}`;
   }
   if (key === "repairs") {
     const [repairs, repairItems, payments] = await Promise.all([
-      revisionAggregate(prisma.repair),
-      revisionAggregate(prisma.repairItem),
-      revisionAggregate(prisma.payment)
+      revisionAggregate(db.repair),
+      revisionAggregate(db.repairItem),
+      revisionAggregate(db.payment)
     ]);
     const repairLatest = Math.max(repairs.latest, repairItems.latest, payments.latest);
     return `repairs:${repairs.count}:${repairLatest}:${repairItems.count}:${payments.count}`;
@@ -886,6 +922,7 @@ function revisionPart(key, value) {
 export async function replaceBusinessData(data, options = {}) {
   const attributes = Array.isArray(data.attributes) ? data.attributes : [];
   const settings = { ...defaultSettings, ...(data.settings || {}) };
+  const preserveUpdatedAt = options.preserveUpdatedAt === true;
   const clientById = new Map((data.clients || []).map((client) => [client.id, { ...client, name: clientNameForSave(client.name) }]));
   const ticketById = new Map((data.repairs || []).map((repair, index) => [repair.id, repairTicket(repair, index)]));
   const preserveItemIds = (data.repairs || []).filter((repair) => repair?.id && repair.itemsLoaded === false).map((repair) => repair.id);
@@ -903,6 +940,11 @@ export async function replaceBusinessData(data, options = {}) {
     preservedItemsByRepair.set(item.repairId, rows);
   }
   await prisma.$transaction(async (tx) => {
+    if (options.expectedRevision && options.expectedRevision !== await getBusinessRevision(tx)) {
+      const error = new Error("数据已被其他设备更新，请刷新后重试");
+      error.status = 409;
+      throw error;
+    }
     await tx.payment.deleteMany();
     await tx.repairItem.deleteMany();
     await tx.repair.deleteMany();
@@ -927,7 +969,7 @@ export async function replaceBusinessData(data, options = {}) {
             passwordHash: user.passwordHash || user.password || "",
             isAdmin: user.isAdmin ?? user.username === "ming",
             pagePermissions: Array.isArray(user.pagePermissions) ? user.pagePermissions : [],
-            ...timestamps(user)
+            ...timestamps(user, preserveUpdatedAt)
           }
         });
       }
@@ -947,26 +989,26 @@ export async function replaceBusinessData(data, options = {}) {
         if (!passwordHash) throwBadRequest("员工密码不完整");
         await tx.staff.upsert({
           where: { id: user.id || cryptoId() },
-          create: { id: user.id || cryptoId(), name: user.name || user.username || "员工", username: user.username, email: user.email || "", passwordHash, isAdmin: Boolean(user.isAdmin), pagePermissions: Array.isArray(user.pagePermissions) ? user.pagePermissions : [], ...timestamps(user) },
+          create: { id: user.id || cryptoId(), name: user.name || user.username || "员工", username: user.username, email: user.email || "", passwordHash, isAdmin: Boolean(user.isAdmin), pagePermissions: Array.isArray(user.pagePermissions) ? user.pagePermissions : [], ...timestamps(user, preserveUpdatedAt) },
           update: { name: user.name || user.username || "员工", username: user.username, email: user.email || "", passwordHash, isAdmin: Boolean(user.isAdmin), pagePermissions: Array.isArray(user.pagePermissions) ? user.pagePermissions : [] }
         });
       }
     }
 
     for (const client of data.clients || []) {
-      await tx.client.create({ data: { ...pick(client, ["id", "docType", "identity", "email", "phone", "address", "comment"]), name: clientNameForSave(client.name), level: normalizeClientLevel(client.level), ...timestamps(client) } });
+      await tx.client.create({ data: { ...pick(client, ["id", "docType", "identity", "email", "phone", "address", "comment"]), name: clientNameForSave(client.name), level: normalizeClientLevel(client.level), ...timestamps(client, preserveUpdatedAt) } });
     }
     for (const [index, brand] of (data.brands || []).entries()) {
-      await tx.brand.create({ data: { ...pick(brand, ["id", "name"]), sortOrder: dbSortOrder(brand.sortOrder, index), ...timestamps(brand) } });
+      await tx.brand.create({ data: { ...pick(brand, ["id", "name"]), sortOrder: dbSortOrder(brand.sortOrder, index), ...timestamps(brand, preserveUpdatedAt) } });
     }
     for (const [index, model] of (data.models || []).entries()) {
-      await tx.model.create({ data: { ...pick(model, ["id", "brandId", "name"]), sortOrder: dbSortOrder(model.sortOrder, index), ...timestamps(model) } });
+      await tx.model.create({ data: { ...pick(model, ["id", "brandId", "name"]), sortOrder: dbSortOrder(model.sortOrder, index), ...timestamps(model, preserveUpdatedAt) } });
     }
     for (const [index, service] of (data.services || []).entries()) {
-      await tx.service.create({ data: { ...pick(service, ["id", "defaultName", "category", "zh", "es"]), category: service.category || "", price: service.price || 0, sortOrder: dbSortOrder(service.sortOrder, index), ...timestamps(service) } });
+      await tx.service.create({ data: { ...pick(service, ["id", "defaultName", "category", "zh", "es"]), category: service.category || "", price: dbMoney(service.price), sortOrder: dbSortOrder(service.sortOrder, index), ...timestamps(service, preserveUpdatedAt) } });
     }
     for (const [index, part] of (data.parts || []).entries()) {
-      await tx.part.create({ data: { ...pick(part, ["id", "defaultName", "category", "zh", "es"]), category: part.category || "", price: part.price || 0, sortOrder: dbSortOrder(part.sortOrder, index), ...timestamps(part) } });
+      await tx.part.create({ data: { ...pick(part, ["id", "defaultName", "category", "zh", "es"]), category: part.category || "", price: dbMoney(part.price), sortOrder: dbSortOrder(part.sortOrder, index), ...timestamps(part, preserveUpdatedAt) } });
     }
     for (const [index, technician] of (data.technicians || []).entries()) {
       await tx.technician.create({
@@ -978,7 +1020,7 @@ export async function replaceBusinessData(data, options = {}) {
           color: normalizeTechnicianColor(technician.color),
           active: technician.active !== false,
           sortOrder: dbSortOrder(technician.sortOrder, index),
-          ...timestamps(technician)
+          ...timestamps(technician, preserveUpdatedAt)
         }
       });
     }
@@ -997,7 +1039,7 @@ export async function replaceBusinessData(data, options = {}) {
           zh: attr.zh || "",
           es: attr.es || "",
           sortOrder: dbSortOrder(attr.sortOrder, index),
-          ...timestamps(attr)
+          ...timestamps(attr, preserveUpdatedAt)
         }
       });
     }
@@ -1025,11 +1067,11 @@ export async function replaceBusinessData(data, options = {}) {
           warrantyStart: repairData.warrantyStart || "",
           technicianId: repairData.technicianId || "",
           technicianName: repairData.technicianName || "",
-          budget: repairData.budget || 0,
-          deposit: repairPayments.length ? depositPaymentTotal(repairPayments) : repairData.deposit || 0,
+          budget: dbMoney(repairData.budget),
+          deposit: repairPayments.length ? depositPaymentTotal(repairPayments) : dbMoney(repairData.deposit),
           paymentMethod: normalizeRepairPaymentMethod(repairData.paymentMethod),
-          discountAmount: repairData.discountAmount || 0,
-          costAmount: repairData.costAmount || 0,
+          discountAmount: dbMoney(repairData.discountAmount),
+          costAmount: dbMoney(repairData.costAmount),
           frontPhoto: repairData.frontPhoto || "",
           backPhoto: repairData.backPhoto || "",
       signatureDataUrl: repairData.signatureDataUrl || "",
@@ -1045,7 +1087,7 @@ export async function replaceBusinessData(data, options = {}) {
       notificationLog: repairData.notificationLog || [],
       searchText: buildRepairSearchText(repairData, { client: clientById.get(repairData.clientId) || {}, items: repairItems, sourceTicket: ticketById.get(repairData.sourceRepairId) || "" }),
       ticketSort: BigInt(ticketSortValue(repairTicket(repairData, index))),
-          ...timestamps(repairData),
+          ...timestamps(repairData, preserveUpdatedAt),
           items: { create: repairItems.map((item) => ({ id: item.id, name: item.name || "", qty: dbMoney(item.qty, 1), price: dbMoney(item.price), cost: dbMoney(item.cost) })) },
           payments: { create: repairPayments.map(paymentPrismaData) }
         }
@@ -1055,8 +1097,8 @@ export async function replaceBusinessData(data, options = {}) {
   }, { timeout: options.transactionTimeout || 300000 });
 }
 
-export async function syncFromClientData(data) {
-  await replaceBusinessData(data, { replaceStaff: false });
+export async function syncFromClientData(data, options = {}) {
+  await replaceBusinessData(data, { replaceStaff: false, ...options });
   return getBootstrapData();
 }
 
@@ -1515,9 +1557,13 @@ function normalizeTechnicianColor(color) {
   return /^#[0-9a-fA-F]{6}$/.test(value) ? value.toLowerCase() : DEFAULT_TECHNICIAN_COLOR;
 }
 
-function timestamps(source) {
+function timestamps(source, preserveUpdatedAt = false) {
   const createdAt = validDate(source?.createdAt);
-  return createdAt ? { createdAt } : {};
+  const updatedAt = validDate(source?.updatedAt);
+  return {
+    ...(createdAt ? { createdAt } : {}),
+    ...(preserveUpdatedAt && updatedAt ? { updatedAt } : {})
+  };
 }
 
 function validDate(value) {

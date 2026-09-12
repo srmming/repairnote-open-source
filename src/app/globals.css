@@ -1,48 +1,48 @@
 /* shadcn/ui inspired tokens & components (no tailwind, pure CSS) */
 
 :root {
-  --background: 0 0% 100%;
-  --foreground: 240 10% 3.9%;
+  --background: 180 33% 99%;
+  --foreground: 218 32% 13%;
 
   --card: 0 0% 100%;
-  --card-foreground: 240 10% 3.9%;
+  --card-foreground: 218 32% 13%;
 
   --popover: 0 0% 100%;
-  --popover-foreground: 240 10% 3.9%;
+  --popover-foreground: 218 32% 13%;
 
-  --primary: 240 5.9% 10%;
-  --primary-foreground: 0 0% 98%;
+  --primary: 176 70% 42%;
+  --primary-foreground: 180 54% 99%;
 
-  --secondary: 240 4.8% 95.9%;
-  --secondary-foreground: 240 5.9% 10%;
+  --secondary: 180 37% 96%;
+  --secondary-foreground: 210 34% 17%;
 
-  --muted: 240 4.8% 95.9%;
-  --muted-foreground: 240 3.8% 46.1%;
+  --muted: 190 26% 95%;
+  --muted-foreground: 212 13% 45%;
 
-  --accent: 240 4.8% 95.9%;
-  --accent-foreground: 240 5.9% 10%;
+  --accent: 178 70% 94%;
+  --accent-foreground: 180 72% 20%;
 
   --destructive: 0 84.2% 60.2%;
   --destructive-foreground: 0 0% 98%;
 
-  --border: 240 5.9% 90%;
-  --input: 240 5.9% 90%;
-  --ring: 240 5% 64.9%;
+  --border: 195 25% 88%;
+  --input: 195 25% 86%;
+  --ring: 176 70% 42%;
 
-  --info: 217 91% 60%;
+  --info: 196 85% 52%;
   --info-foreground: 0 0% 100%;
   --info-soft: 214 95% 93%;
   --info-soft-foreground: 226 71% 40%;
 
-  --success: 142 71% 45%;
-  --success-soft: 138 76% 92%;
-  --success-soft-foreground: 142 72% 29%;
+  --success: 176 70% 42%;
+  --success-soft: 178 68% 94%;
+  --success-soft-foreground: 180 72% 22%;
 
   --warning: 32 95% 44%;
   --warning-soft: 48 96% 89%;
   --warning-soft-foreground: 26 84% 28%;
 
-  --page-tint: 210 42% 97%;
+  --page-tint: 188 32% 97%;
   --customer-tint: 214 95% 98%;
   --customer-border: 214 68% 86%;
   --repair-tint: 150 54% 97%;
@@ -56,10 +56,10 @@
 
   --radius: 0.5rem;
 
-  --shadow-sm: 0 1px 0.125rem 0 rgb(0 0 0 / 0.05);
-  --shadow: 0 1px 0.1875rem 0 rgb(0 0 0 / 0.1), 0 1px 0.125rem -1px rgb(0 0 0 / 0.1);
-  --shadow-md: 0 0.25rem 0.375rem -1px rgb(0 0 0 / 0.1), 0 0.125rem 0.25rem -0.125rem rgb(0 0 0 / 0.1);
-  --shadow-lg: 0 0.625rem 0.9375rem -0.1875rem rgb(0 0 0 / 0.1), 0 0.25rem 0.375rem -0.25rem rgb(0 0 0 / 0.1);
+  --shadow-sm: 0 1px 2px rgb(15 23 42 / 0.04);
+  --shadow: 0 0.75rem 2rem -1.5rem rgb(15 23 42 / 0.22);
+  --shadow-md: 0 1rem 2.5rem -1.75rem rgb(15 23 42 / 0.26);
+  --shadow-lg: 0 1.5rem 4rem -2rem rgb(15 23 42 / 0.3);
 }
 
 :root[data-theme="dark"] {
@@ -134,7 +134,7 @@ body {
 
 body {
   margin: 0;
-  background: hsl(var(--background));
+  background: hsl(var(--page-tint));
   color: hsl(var(--foreground));
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Helvetica,
@@ -180,16 +180,18 @@ button:disabled {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: hsl(var(--page-tint));
+  background:
+    linear-gradient(135deg, hsl(176 70% 42% / 0.1), transparent 38%),
+    hsl(var(--background));
   padding: 1.5rem;
 }
 
 .login-logo {
   color: hsl(var(--foreground));
-  font-size: 2.5rem;
+  font-size: 2.25rem;
   line-height: 1;
   font-weight: 700;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
   text-align: center;
   margin-bottom: 1.5rem;
 }
@@ -209,7 +211,8 @@ button:disabled {
 .login-card {
   width: 23.75rem;
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  border-color: hsl(var(--border) / 0.8);
+  box-shadow: var(--shadow-lg);
 }
 
 .login-card .ui-card-content {
@@ -248,7 +251,7 @@ button:disabled {
   color: hsl(var(--foreground));
   font-size: 1.25rem;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .login-error {
@@ -281,7 +284,7 @@ button:disabled {
   position: fixed;
   inset: 0 auto 0 0;
   width: 15rem;
-  background: hsl(var(--background));
+  background: hsl(var(--background) / 0.96);
   border-right: 1px solid hsl(var(--border));
   display: flex;
   flex-direction: column;
@@ -296,16 +299,16 @@ button:disabled {
   border-bottom: 1px solid hsl(var(--border));
   color: hsl(var(--foreground));
   font-size: 0.9375rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-weight: 700;
+  letter-spacing: 0;
 }
 
 .brand-title svg {
-  color: hsl(var(--foreground));
+  color: hsl(var(--primary));
 }
 
 .side-menu {
-  padding: 0.75rem 0.75rem;
+  padding: 0.875rem 0.75rem;
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
@@ -320,14 +323,14 @@ button:disabled {
   height: 2.25rem;
   padding: 0 0.75rem;
   border: 0;
-  border-radius: calc(var(--radius) - 0.125rem);
+  border-radius: var(--radius);
   color: hsl(var(--muted-foreground));
   background: transparent;
   text-align: left;
   text-decoration: none;
   font-size: 0.875rem;
   font-weight: 500;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .side-item:hover {
@@ -336,18 +339,19 @@ button:disabled {
 }
 
 .side-item.active {
-  background: hsl(var(--success-soft));
-  color: hsl(var(--success-soft-foreground));
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(180 72% 18%);
   font-weight: 700;
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.18);
 }
 
 .side-item.active svg {
-  color: hsl(var(--success-soft-foreground));
+  color: hsl(var(--primary));
   opacity: 1;
 }
 
 .side-item.active .red-dot {
-  background: hsl(var(--success));
+  background: hsl(var(--primary));
 }
 
 .side-item svg {
@@ -417,7 +421,7 @@ button:disabled {
   align-items: center;
   gap: 1rem;
   padding: 0 2rem;
-  background: hsl(var(--background));
+  background: hsl(var(--background) / 0.96);
   border-bottom: 1px solid hsl(var(--border));
 }
 
@@ -426,7 +430,7 @@ button:disabled {
   color: hsl(var(--foreground));
   font-size: 1.125rem;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   white-space: nowrap;
 }
 
@@ -471,7 +475,7 @@ button:disabled {
   border-radius: 1rem;
   font-size: 1rem;
   font-weight: 800;
-  box-shadow: 0 1.25rem 3rem hsl(var(--primary) / 0.3), 0 0.5rem 1.25rem hsl(var(--foreground) / 0.14);
+  box-shadow: 0 1.25rem 3rem hsl(var(--primary) / 0.22), 0 0.5rem 1.25rem hsl(var(--foreground) / 0.1);
 }
 
 .topbar-warning {
@@ -784,9 +788,9 @@ button:disabled {
 .table-wrap {
   overflow: auto;
   background: hsl(var(--card));
-  border: 1px solid hsl(var(--border));
+  border: 1px solid hsl(var(--border) / 0.85);
   border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow);
 }
 
 .repairs-table {
@@ -2255,7 +2259,7 @@ button:disabled {
   color: hsl(var(--foreground));
   font-size: 0.875rem;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 @media (max-width: 1320px) {
@@ -4252,7 +4256,7 @@ button:disabled {
   margin-top: 0.5rem;
   font-size: 1.75rem;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .metric-muted .ui-card-content {
@@ -5339,7 +5343,7 @@ button:disabled {
   color: hsl(var(--foreground));
   font-size: 1.125rem;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .category-layout > div:last-child {
@@ -5478,7 +5482,7 @@ button:disabled {
   background: transparent;
   color: hsl(var(--foreground));
   font-size: 0.8125rem;
-  font-weight: 500;
+  font-weight: 650;
   white-space: nowrap;
   transition: background-color 0.15s ease, border-color 0.15s ease,
     color 0.15s ease, box-shadow 0.15s ease;
@@ -5494,11 +5498,12 @@ button:disabled {
   background: hsl(var(--primary));
   color: hsl(var(--primary-foreground));
   border-color: hsl(var(--primary));
+  box-shadow: 0 0.5rem 1.25rem -0.875rem hsl(var(--primary) / 0.8);
 }
 
 .ui-button-default:hover {
-  background: hsl(var(--primary) / 0.9);
-  border-color: transparent;
+  background: hsl(176 72% 37%);
+  border-color: hsl(176 72% 37%);
 }
 
 .ui-button-outline {
@@ -5510,6 +5515,7 @@ button:disabled {
 .ui-button-outline:hover {
   background: hsl(var(--accent));
   color: hsl(var(--accent-foreground));
+  border-color: hsl(var(--primary) / 0.28);
 }
 
 .ui-button-ghost {
@@ -5536,9 +5542,9 @@ button:disabled {
 }
 
 .ui-button-success {
-  background: hsl(var(--success));
-  color: #fff;
-  border-color: hsl(var(--success));
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border-color: hsl(var(--primary));
 }
 
 .ui-button-secondary {
@@ -5685,7 +5691,7 @@ button:disabled {
 .ui-select:focus,
 .ui-textarea:focus {
   border-color: hsl(var(--ring));
-  box-shadow: 0 0 0 0.1875rem hsl(var(--ring) / 0.3);
+  box-shadow: 0 0 0 0.1875rem hsl(var(--ring) / 0.16);
 }
 
 .ui-select-menu {
@@ -5739,9 +5745,9 @@ button:disabled {
 .ui-card {
   background: hsl(var(--card));
   color: hsl(var(--card-foreground));
-  border: 1px solid hsl(var(--border));
+  border: 1px solid hsl(var(--border) / 0.85);
   border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow);
 }
 
 .ui-card-header {
@@ -5760,7 +5766,7 @@ button:disabled {
   color: hsl(var(--foreground));
   font-size: 0.875rem;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .ui-card-description {
@@ -5791,7 +5797,7 @@ button:disabled {
 
 .ui-table th,
 .ui-table td {
-  border-bottom: 1px solid hsl(var(--border));
+  border-bottom: 1px solid hsl(var(--border) / 0.8);
   padding: 0.75rem 0.875rem;
   color: hsl(var(--foreground));
   line-height: 1.5;
@@ -5801,10 +5807,10 @@ button:disabled {
 }
 
 .ui-table th {
-  color: hsl(var(--muted-foreground));
-  font-weight: 500;
+  color: hsl(211 18% 42%);
+  font-weight: 700;
   font-size: 0.75rem;
-  background: hsl(var(--muted) / 0.55);
+  background: hsl(188 38% 97%);
   white-space: nowrap;
   height: 2.5rem;
 }
@@ -5814,11 +5820,11 @@ button:disabled {
 }
 
 .ui-table tbody tr:hover td {
-  background: hsl(var(--muted) / 0.5);
+  background: hsl(178 70% 96% / 0.78);
 }
 
 .ui-table tbody tr.row-click:hover td {
-  background: hsl(var(--accent));
+  background: hsl(178 70% 96% / 0.92);
 }
 
 .ui-table tbody tr.draggable-row {
@@ -5892,7 +5898,7 @@ button:disabled {
   margin: 0;
   font-size: 1rem;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .dialog-description {
@@ -6248,13 +6254,13 @@ button:disabled {
   }
 
   .mobile-menu-card.active {
-    border-color: hsl(var(--foreground));
-    background: hsl(var(--foreground));
-    color: hsl(var(--background));
+    border-color: hsl(var(--primary) / 0.36);
+    background: hsl(var(--primary) / 0.12);
+    color: hsl(180 72% 18%);
   }
 
   .mobile-menu-card.active svg {
-    color: hsl(var(--background));
+    color: hsl(var(--primary));
   }
 
   .mobile-menu-card span {
@@ -6692,9 +6698,9 @@ button:disabled {
   }
 
   .tab.active {
-    background: hsl(var(--foreground));
-    color: hsl(var(--background));
-    border-color: hsl(var(--foreground));
+    background: hsl(var(--primary) / 0.12);
+    color: hsl(180 72% 18%);
+    border-color: hsl(var(--primary) / 0.36);
   }
 
   .tabs > .search {

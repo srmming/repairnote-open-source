@@ -1,12 +1,16 @@
 import { chromium } from "playwright";
 import { PrismaClient } from "@prisma/client";
+import crypto from "node:crypto";
 
 const baseUrl = process.env.BASE_URL || "http://localhost:3000";
-const smokeUsername = process.env.SMOKE_USERNAME || "ming";
-const smokePassword = process.env.SMOKE_PASSWORD || "123456";
+const defaultLocalLogin = process.env.NODE_ENV === "production" ? ["admin", "admin123"] : ["ming", "123456"];
+const smokeUsername = process.env.SMOKE_USERNAME || process.env.REPAIRNOTE_ADMIN_USERNAME || defaultLocalLogin[0];
+const smokePassword = process.env.SMOKE_PASSWORD || process.env.REPAIRNOTE_ADMIN_PASSWORD || defaultLocalLogin[1];
 const suffix = String(Date.now()).slice(-6);
 const results = [];
 const prisma = new PrismaClient();
+const smokeServiceName = `更换电池冒烟${suffix}`;
+await prisma.service.create({ data: { id: crypto.randomUUID(), defaultName: `Battery smoke ${suffix}`, category: "维修", zh: smokeServiceName, es: `Bateria smoke ${suffix}`, price: 49 } });
 
 function ok(name) {
   results.push({ name, ok: true });
@@ -236,7 +240,8 @@ await step("新增维修单、价格项目、A4 和小票打印、保存", async
   await page.getByPlaceholder("品牌").fill("Apple");
   await page.getByPlaceholder("型号").fill("IPHONE 13");
   await chooseUiSelect(page.getByRole("main"), "维修师", technicianName);
-  await page.getByText("更换电池，三个月保修").click();
+  await page.getByPlaceholder("搜索", { exact: true }).fill(smokeServiceName);
+  await page.getByText(smokeServiceName).click();
   await page.getByPlaceholder("维修备注").fill(`Cambiar bateria test ${suffix}`);
   await page.getByRole("button", { name: "保存" }).click();
   let repair = null;
@@ -278,7 +283,10 @@ await step("维修单详情编辑和状态流转", async () => {
 });
 
 await step("从已结束维修单创建保修单并编辑", async () => {
-  const sourceRepair = await prisma.repair.findFirst({ where: { status: "已取走", orderType: "repair" }, orderBy: { createdAt: "asc" } });
+  let sourceRepair = await prisma.repair.findFirst({ where: { status: "已取走", orderType: "repair" }, orderBy: { createdAt: "asc" } });
+  if (!sourceRepair && createdRepairId) {
+    sourceRepair = await prisma.repair.update({ where: { id: createdRepairId }, data: { status: "已取走", warrantyStart: new Date().toISOString().slice(0, 16).replace("T", " ") } });
+  }
   if (!sourceRepair) throw new Error("缺少可开保修单的已取走维修单");
   await go(`/dashboard/repairs/${sourceRepair.id}`, "维修单 编辑");
   await page.getByRole("button", { name: "开保修单" }).click();

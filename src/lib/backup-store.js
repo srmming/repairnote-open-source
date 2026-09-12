@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { getBootstrapData, syncFromClientData } from "@/lib/data-store";
+import { getBootstrapData, getBusinessRevision, syncFromClientData } from "@/lib/data-store";
 import { validateBusinessDataShape } from "@/lib/data-validation";
 
 const MAX_BACKUPS = 60;
@@ -54,9 +54,10 @@ export async function getBackupSnapshot(id) {
 
 export async function restoreBackupSnapshot(id, staff) {
   const snapshot = await getBackupSnapshot(id);
+  const revision = await getBusinessRevision();
   await createBackupSnapshot({ kind: "safety", reason: "恢复前自动备份", staff });
   const cleanData = validateBusinessDataShape(snapshot.data, "历史备份");
-  return syncFromClientData(cleanData);
+  return syncFromClientData(cleanData, { expectedRevision: revision, preserveUpdatedAt: true });
 }
 
 export function backupFileName(snapshot) {

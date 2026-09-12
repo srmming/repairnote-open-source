@@ -39,6 +39,7 @@ export function collectionRoute(resource) {
         const staff = await requireResourceAccess(resource, "write");
         const body = await request.json();
         if (resource === "staff" && !staff.isAdmin) return Response.json({ error: "只有管理员可管理员工" }, { status: 403 });
+        if (resource === "repairs") return Response.json({ error: "请使用单张维修单接口保存" }, { status: 405 });
         if (resource === "technicians") return Response.json(await syncTechniciansData(body));
         if (resource === "catalog") return Response.json(await syncCatalogData(body));
         if (resource === "attributes") return Response.json(await syncAttributesData(body));

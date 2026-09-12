@@ -1,7 +1,7 @@
 import { authErrorResponse, requirePageAccess } from "@/lib/auth";
 import { readBackupTextFromZip } from "@/lib/backup-zip";
 import { createBackupSnapshot } from "@/lib/backup-store";
-import { getBootstrapData, syncFromClientData } from "@/lib/data-store";
+import { getBootstrapData, getBusinessRevision, syncFromClientData } from "@/lib/data-store";
 import { validateBusinessDataShape, withoutImportedUsers } from "@/lib/data-validation";
 
 const MAX_BACKUP_FILE_SIZE = 200 * 1024 * 1024;
@@ -26,8 +26,9 @@ export async function POST(request) {
     const parsed = JSON.parse(text);
     const cleanData = withoutImportedUsers(validateBusinessDataShape(parsed.data || parsed, "备份文件"));
 
+    const revision = await getBusinessRevision();
     await createBackupSnapshot({ kind: "safety", reason: "导入文件前自动备份", staff });
-    await syncFromClientData(cleanData);
+    await syncFromClientData(cleanData, { expectedRevision: revision, preserveUpdatedAt: true });
     return Response.json({ ok: true, data: await getBootstrapData() });
   } catch (error) {
     if (error instanceof SyntaxError) {

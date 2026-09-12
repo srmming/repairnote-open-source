@@ -25,11 +25,12 @@ export async function PUT(request, { params }) {
   }
 }
 
-export async function DELETE(_request, { params }) {
+export async function DELETE(request, { params }) {
   try {
-    await requireAnyPageAccess(["repairs", "warranties"]);
+    const staff = await requireAnyPageAccess(["repairs", "warranties"]);
     const { id } = await params;
-    return Response.json(await deleteRepairRecord(id));
+    const body = await request.json().catch(() => ({}));
+    return Response.json(await deleteRepairRecord(id, { actor: { isAdmin: staff.isAdmin }, updatedAt: body?.updatedAt }));
   } catch (error) {
     return authErrorResponse(error);
   }

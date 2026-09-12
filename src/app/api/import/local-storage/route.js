@@ -1,5 +1,5 @@
 import { authErrorResponse, requireStaff } from "@/lib/auth";
-import { getBootstrapData, syncFromClientData } from "@/lib/data-store";
+import { getBootstrapData, getBusinessRevision, syncFromClientData } from "@/lib/data-store";
 import { validateBusinessDataShape, withoutImportedUsers } from "@/lib/data-validation";
 
 export async function POST(request) {
@@ -7,7 +7,7 @@ export async function POST(request) {
     const staff = await requireStaff();
     if (!staff.isAdmin) return Response.json({ error: "只有管理员可导入旧数据" }, { status: 403 });
     const data = await request.json();
-    await syncFromClientData(withoutImportedUsers(validateBusinessDataShape(data, "旧 localStorage 数据")));
+    await syncFromClientData(withoutImportedUsers(validateBusinessDataShape(data, "旧 localStorage 数据")), { expectedRevision: await getBusinessRevision(), preserveUpdatedAt: true });
     const imported = await getBootstrapData();
     return Response.json({
       ok: true,
