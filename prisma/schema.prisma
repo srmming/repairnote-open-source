@@ -7,17 +7,19 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// 全局身份：账号、密码、登录会话。业务权限不再放在这里，而是由 PortalMember 提供。
+// isSystemAdmin 只用于 /api/system/*（门户元数据与成员管理），不能直接绕过成员关系访问业务数据。
 model Staff {
   id               String   @id @default(cuid())
   name             String
   username         String   @unique
   email            String   @default("")
   passwordHash     String   @db.VarChar(255)
-  isAdmin          Boolean  @default(false)
-  pagePermissions  Json
+  isSystemAdmin    Boolean  @default(false)
   sessionTokenHash String?  @db.VarChar(255)
   sessionExpiresAt DateTime?
   sessions         StaffSession[]
+  memberships      PortalMember[]
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 }
@@ -35,8 +37,49 @@ model StaffSession {
   @@index([expiresAt])
 }
 
+// 门户 = 一个独立的维修业务工作区（可代表一家门店）。默认门户固定 id = "default"。
+model Portal {
+  id                  String   @id
+  name                String   @db.VarChar(80)
+  isActive            Boolean  @default(true)
+  revision            BigInt   @default(0)
+  creationKey         String?  @unique @db.VarChar(64)
+  creationPayloadHash String?  @db.VarChar(64)
+  members             PortalMember[]
+  clients             Client[]
+  brands              Brand[]
+  models              Model[]
+  services            Service[]
+  parts               Part[]
+  technicians         Technician[]
+  attributeGroups     AttributeGroup[]
+  attributes          Attribute[]
+  repairs             Repair[]
+  setting             Setting?
+  backups             BackupSnapshot[]
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([createdAt])
+}
+
+model PortalMember {
+  staffId         String
+  portalId        String
+  isAdmin         Boolean  @default(false)
+  pagePermissions Json
+  staff           Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  portal          Portal   @relation(fields: [portalId], references: [id], onDelete: Cascade)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@id([staffId, portalId])
+  @@index([portalId])
+}
+
 model Client {
   id        String   @id @default(cuid())
+  portalId  String
   name      String
   docType   String   @default("DNI")
   identity  String   @default("")
@@ -45,96 +88,127 @@ model Client {
   address   String   @db.Text
   comment   String   @db.Text
   level     String   @default("VIP")
+  portal    Portal   @relation(fields: [portalId], references: [id], onDelete: Restrict)
   repairs   Repair[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([name])
-  @@index([phone])
+  @@unique([portalId, id])
+  @@index([portalId, name])
+  @@index([portalId, phone])
+  @@index([portalId, createdAt])
 }
 
 model Brand {
   id        String   @id @default(cuid())
-  name      String   @unique
+  portalId  String
+  name      String
   sortOrder Int      @default(0)
+  portal    Portal   @relation(fields: [portalId], references: [id], onDelete: Restrict)
   models    Model[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@unique([portalId, id])
+  @@unique([portalId, name])
 }
 
 model Model {
   id        String   @id @default(cuid())
+  portalId  String
   brandId   String
   name      String
   sortOrder Int      @default(0)
-  brand     Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  portal    Portal   @relation(fields: [portalId], references: [id], onDelete: Restrict)
+  brand     Brand    @relation(fields: [portalId, brandId], references: [portalId, id], onDelete: Cascade)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([brandId])
+  @@index([portalId, brandId])
 }
 
 model Service {
   id          String   @id @default(cuid())
+  portalId    String
   defaultName String   @db.Text
   category    String   @default("")
   zh          String   @db.Text
   es          String   @db.Text
   price       Decimal  @default(0) @db.Decimal(12, 2)
   sortOrder   Int      @default(0)
+  portal      Portal   @relation(fields: [portalId], references: [id], onDelete: Restrict)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@index([portalId, sortOrder])
 }
 
 model Part {
   id          String   @id @default(cuid())
+  portalId    String
   defaultName String   @db.Text
   category    String   @default("")
   zh          String   @db.Text
   es          String   @db.Text
   price       Decimal  @default(0) @db.Decimal(12, 2)
   sortOrder   Int      @default(0)
+  portal      Portal   @relation(fields: [portalId], references: [id], onDelete: Restrict)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@index([portalId, sortOrder])
 }
 
 model Technician {
   id        String   @id @default(cuid())
-  name      String   @unique
+  portalId  String
+  name      String
   phone     String   @default("")
   email     String   @default("")
   color     String   @default("#16a34a")
   active    Boolean  @default(true)
   sortOrder Int      @default(0)
+  portal    Portal   @relation(fields: [portalId], references: [id], onDelete: Restrict)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@unique([portalId, name])
+  @@index([portalId, sortOrder])
 }
 
 model AttributeGroup {
   id         String      @id @default(cuid())
-  name       String      @unique
+  portalId   String
+  name       String
+  portal     Portal      @relation(fields: [portalId], references: [id], onDelete: Restrict)
   attributes Attribute[]
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
+
+  @@unique([portalId, id])
+  @@unique([portalId, name])
 }
 
 model Attribute {
   id          String         @id @default(cuid())
+  portalId    String
   groupId     String
   defaultName String
   zh          String         @default("")
   es          String         @default("")
   sortOrder   Int            @default(0)
-  group       AttributeGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  portal      Portal         @relation(fields: [portalId], references: [id], onDelete: Restrict)
+  group       AttributeGroup @relation(fields: [portalId, groupId], references: [portalId, id], onDelete: Cascade)
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
-  @@index([groupId])
+  @@index([portalId, groupId])
 }
 
 model Repair {
   id              String       @id @default(cuid())
-  ticket          String       @unique
+  portalId        String
+  ticket          String
   clientId        String
   brand           String       @default("")
   model           String       @default("")
@@ -159,6 +233,7 @@ model Repair {
   backPhoto       String       @db.LongText
   signatureDataUrl String      @db.LongText
   signedAt        String       @default("")
+  // 公共二维码 token：继续全局唯一并保留旧值，旧二维码无需重新打印。
   publicToken     String       @unique @default(cuid())
   orderType       String       @default("repair")
   sourceRepairId  String       @default("")
@@ -170,26 +245,29 @@ model Repair {
   notificationLog Json
   searchText      String       @db.Text
   ticketSort      BigInt       @default(0)
-  client          Client       @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  portal          Portal       @relation(fields: [portalId], references: [id], onDelete: Restrict)
+  client          Client       @relation(fields: [portalId, clientId], references: [portalId, id], onDelete: Restrict)
   items           RepairItem[]
   payments        Payment[]
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 
-  @@index([clientId])
-  @@index([orderType])
-  @@index([sourceRepairId])
-  @@index([status])
-  @@index([repairTime])
-  @@index([createdAt])
-  @@index([ticketSort])
-  @@index([technicianId])
-  @@index([technicianName])
+  @@unique([portalId, ticket])
+  @@index([portalId, clientId])
+  @@index([portalId, orderType])
+  @@index([portalId, sourceRepairId])
+  @@index([portalId, status])
+  @@index([portalId, repairTime])
+  @@index([portalId, createdAt])
+  @@index([portalId, ticketSort])
+  @@index([portalId, technicianId])
+  @@index([portalId, technicianName])
   // 当前服务端搜索用 searchText 的子串匹配（LIKE，与界面“包含”语义一致）。
-  // 保留 FULLTEXT 以备将来切换到 ngram 全文检索（数据量更大时）；切换需改用 MATCH...AGAINST。
+  // 保留 FULLTEXT 以备将来切换到 ngram 全文检索（数据量更大时）；切换需改用 MATCH...AGAINST。FULLTEXT 不是隔离机制。
   @@fulltext([searchText])
 }
 
+// RepairItem / Payment 通过 repairId → Repair 继承门户归属；所有读写必须经已范围化的父单或带门户条件的 JOIN。
 model RepairItem {
   id        String   @id @default(cuid())
   repairId  String
@@ -221,21 +299,28 @@ model Payment {
   @@index([method])
 }
 
+// 每门户一行设置，以 portalId 为主键（原 id="main" 的设置迁到 default 门户）。
 model Setting {
-  id        String   @id @default("main")
+  portalId  String   @id
   value     Json
+  portal    Portal   @relation(fields: [portalId], references: [id], onDelete: Cascade)
   updatedAt DateTime @updatedAt
 }
 
+// 业务备份按门户存放；autoDay 只有 kind="auto" 时赋值（Europe/Madrid 业务日），用唯一约束保证每门户每天一份自动备份。
 model BackupSnapshot {
   id        String   @id @default(cuid())
+  portalId  String
   kind      String   @default("manual")
   reason    String   @default("")
+  autoDay   String?  @db.VarChar(10)
   data      Json
   counts    Json
   createdBy String   @default("")
+  portal    Portal   @relation(fields: [portalId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
 
-  @@index([createdAt])
-  @@index([kind])
+  @@unique([portalId, kind, autoDay])
+  @@index([portalId, createdAt])
+  @@index([portalId, kind])
 }

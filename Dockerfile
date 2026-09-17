@@ -17,4 +17,4 @@ ENV NODE_ENV=production
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "node scripts/prisma-baseline.mjs && npx prisma migrate deploy && npx prisma db seed && npm run start"]
+CMD ["sh", "-c", "node scripts/db-setup.mjs && node server.js"]

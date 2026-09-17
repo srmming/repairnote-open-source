@@ -1,14 +1,17 @@
-import { authErrorResponse, requirePageAccess } from "@/lib/auth";
+import { badRequest, errorResponse, readJsonBody, requestIdOf } from "@/lib/api-errors";
+import { assertNoPortalOverride, portalJson, requirePortalContext } from "@/lib/portal-context";
 import { restoreBackupSnapshot } from "@/lib/backup-store";
 
 export async function POST(request) {
+  const requestId = requestIdOf(request);
   try {
-    const staff = await requirePageAccess("backup");
-    if (!staff.isAdmin) return Response.json({ error: "只有管理员可恢复备份" }, { status: 403 });
-    const { id } = await request.json();
-    if (!id) return Response.json({ error: "请选择要恢复的备份" }, { status: 400 });
-    return Response.json({ ok: true, data: await restoreBackupSnapshot(id, staff) });
+    const ctx = await requirePortalContext(request, { admin: true });
+    const body = await readJsonBody(request);
+    assertNoPortalOverride(ctx, body);
+    const id = String(body.id || "").trim();
+    if (!id) throw badRequest("请选择要恢复的备份");
+    return portalJson(ctx, { ok: true, data: await restoreBackupSnapshot(ctx, id, body.expectedRevision) });
   } catch (error) {
-    return authErrorResponse(error);
+    return errorResponse(error, { requestId });
   }
 }

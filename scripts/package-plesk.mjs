@@ -20,8 +20,14 @@ const includes = [
   ".env.plesk.example",
   "scripts/plesk-setup.mjs",
   "scripts/prisma-baseline.mjs",
+  "scripts/db-preflight.mjs",
+  "scripts/db-setup.mjs",
+  "scripts/portal-admin.mjs",
+  "scripts/verify-portal-migration.mjs",
   "scripts/mysql-setup.mjs",
   "scripts/load-env.mjs",
+  "docs/多门户升级与运维说明.md",
+  "docs/门户管理使用说明.md",
   "MySQL迁移说明.md"
 ].filter((item) => existsSync(path.join(root, item)));
 

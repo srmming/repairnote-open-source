@@ -1,0 +1,44 @@
+{
+  "at": "2026-09-17T01:57:15.035Z",
+  "before": {
+    "Staff": 3,
+    "StaffSession": 1,
+    "Client": 2,
+    "Brand": 1,
+    "Model": 1,
+    "Service": 1,
+    "Part": 1,
+    "Technician": 1,
+    "AttributeGroup": 1,
+    "Attribute": 1,
+    "Repair": 2,
+    "RepairItem": 1,
+    "Payment": 1,
+    "Setting": 1,
+    "BackupSnapshot": 1
+  },
+  "after": {
+    "Staff": 3,
+    "StaffSession": 0,
+    "Client": 2,
+    "Brand": 1,
+    "Model": 1,
+    "Service": 1,
+    "Part": 1,
+    "Technician": 1,
+    "AttributeGroup": 1,
+    "Attribute": 1,
+    "Repair": 2,
+    "RepairItem": 1,
+    "Payment": 1,
+    "Setting": 1,
+    "BackupSnapshot": 1
+  },
+  "systemAdmins": [
+    {
+      "id": "u1",
+      "username": "ming"
+    }
+  ],
+  "problems": []
+}

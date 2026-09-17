@@ -1,13 +1,14 @@
-import { authErrorResponse, requirePageAccess } from "@/lib/auth";
+import { errorResponse, requestIdOf } from "@/lib/api-errors";
+import { portalJson, requirePortalContext } from "@/lib/portal-context";
 import { technicianDashboard } from "@/lib/report-store";
 
 export async function GET(request) {
+  const requestId = requestIdOf(request);
   try {
-    await requirePageAccess("technicians");
+    const ctx = await requirePortalContext(request, { anyOf: ["technicians"] });
     const params = new URL(request.url).searchParams;
-    const result = await technicianDashboard({ date: params.get("date") || "" });
-    return Response.json(result);
+    return portalJson(ctx, await technicianDashboard(ctx, { date: params.get("date") || "" }));
   } catch (error) {
-    return authErrorResponse(error);
+    return errorResponse(error, { requestId });
   }
 }

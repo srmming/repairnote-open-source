@@ -1,0 +1,332 @@
+{
+  "at": "2026-09-17T02:23:40.730Z",
+  "baseUrl": "http://localhost:3010",
+  "passed": 54,
+  "failed": 0,
+  "results": [
+    {
+      "id": "G02",
+      "name": "非系统管理员访问 system API 全部 403；未登录 401",
+      "ok": true,
+      "detail": "403/401 与数据不变"
+    },
+    {
+      "id": "G03",
+      "name": "系统管理接口携带 X-Portal-Id 返回 400；无门户系统管理员可列出门户",
+      "ok": true,
+      "detail": "无门户系统管理员可管理、不可访问业务"
+    },
+    {
+      "id": "G04",
+      "name": "系统管理员只输入名称创建门户：Portal+空Setting+创建者管理员，revision=1",
+      "ok": true,
+      "detail": "id=14234c81-c46c-4a67-abc5-faea6415d8ab"
+    },
+    {
+      "id": "G06",
+      "name": "同 key 同名称重放返回 200 且不重复创建；缺失 / 非法 key 400",
+      "ok": true,
+      "detail": "重放 200 / created=false"
+    },
+    {
+      "id": "G06b",
+      "name": "同操作者同 key 并发双提交只产生一个门户",
+      "ok": true,
+      "detail": "portal=69680610-e9b7-4c18-bcdf-c5faf8bce060"
+    },
+    {
+      "id": "G08",
+      "name": "同 key 不同名称 409 IDEMPOTENCY_CONFLICT；另一操作者使用同 key 独立作用域",
+      "ok": true,
+      "detail": "409 / 独立作用域"
+    },
+    {
+      "id": "G10",
+      "name": "改名只改元数据与 revision；非法输入 400；字符串布尔拒绝",
+      "ok": true,
+      "detail": "revision=3"
+    },
+    {
+      "id": "G07",
+      "name": "改名后重放原创建请求仍识别同一门户（按创建时载荷摘要）",
+      "ok": true,
+      "detail": "重放识别同一门户"
+    },
+    {
+      "id": "G14",
+      "name": "精确用户名查找：最多 1 个安全摘要；未命中空数组；空查询 400；普通管理员 403",
+      "ok": true,
+      "detail": "安全摘要"
+    },
+    {
+      "id": "G15/G16",
+      "name": "向 B 分配已有账号；不存在账号 404；相同授权幂等；未知键 / 非布尔 / isSystemAdmin 400",
+      "ok": true,
+      "detail": "分配成功、校验齐全"
+    },
+    {
+      "id": "G09",
+      "name": "门户列表过滤 / 分页 / 非法页码；只列元数据无业务数字",
+      "ok": true,
+      "detail": "过滤 / 分页 / no-store"
+    },
+    {
+      "id": "G19",
+      "name": "旧 / 缺失 / 非法 expectedRevision：409 / 400 / 400 且不变更",
+      "ok": true,
+      "detail": "409/400"
+    },
+    {
+      "id": "G18",
+      "name": "最后管理员保护（降级 / 移出 409）；自移出允许且系统管理权仍在；并发互降至少保留一位",
+      "ok": true,
+      "detail": "保护有效"
+    },
+    {
+      "id": "G24",
+      "name": "system 写接口 Origin 缺失 / 错误 403 且零写入；错误 Content-Type 400；未知方法 405；私有缓存",
+      "ok": true,
+      "detail": "同源校验有效"
+    },
+    {
+      "id": "A01",
+      "name": "未登录请求 portals / bootstrap / 业务列表 / 备份下载 401",
+      "ok": true,
+      "detail": "401"
+    },
+    {
+      "id": "A02",
+      "name": "有效登录但业务请求不带 X-Portal-Id → 400，不自动读取 default",
+      "ok": true,
+      "detail": "400"
+    },
+    {
+      "id": "A03",
+      "name": "A-only 用户把门户头改成 B：读 / 写 / 导入 / 下载 / 报表全部 403，B 摘要不变",
+      "ok": true,
+      "detail": "403 且 B 不变"
+    },
+    {
+      "id": "A04",
+      "name": "A/B 双成员携带 A 头提交 B 的订单 / 客户 / 备份 id → 404",
+      "ok": true,
+      "detail": "404"
+    },
+    {
+      "id": "A05",
+      "name": "请求体 portalId=B、请求头=A → 400",
+      "ok": true,
+      "detail": "400 PORTAL_MISMATCH"
+    },
+    {
+      "id": "A06/A07",
+      "name": "无成员账号登录成功、空门户列表；成员无页面权限 bootstrap 可用但 pagePermissions 为空",
+      "ok": true,
+      "detail": "分流数据正确"
+    },
+    {
+      "id": "A08",
+      "name": "A 管理员新增员工（同事务加入当前门户）；重用已有用户名 409 且不认领",
+      "ok": true,
+      "detail": "新增 / 冲突正确"
+    },
+    {
+      "id": "A09/G23",
+      "name": "A 门店管理员改 / 删 B-only 员工被拒；写 isSystemAdmin 拒绝；修改系统主管理账号 / 共享账号全局身份被拒",
+      "ok": true,
+      "detail": "身份保护有效"
+    },
+    {
+      "id": "S02",
+      "name": "改密码后该账号两个旧会话立即失效，旧密码失败，新密码成功",
+      "ok": true,
+      "detail": "会话撤销与密码同事务"
+    },
+    {
+      "id": "A10",
+      "name": "双门户员工从 A 被移出：A 请求立即拒绝，B 会话正常，Staff 不删",
+      "ok": true,
+      "detail": "移出只影响 A"
+    },
+    {
+      "id": "A12",
+      "name": "同门户两名管理员并发互相降级：至少一位保留",
+      "ok": true,
+      "detail": "3 轮并发均至少保留一位"
+    },
+    {
+      "id": "D01",
+      "name": "A/B 相同 ticket / 品牌名 / 技师名并存；同门户内唯一冲突；publicToken 全局唯一",
+      "ok": true,
+      "detail": "约束正确"
+    },
+    {
+      "id": "D02/D03",
+      "name": "A 用 B 客户 / 品牌 / 技师 / 来源单 id 创建维修单被拒且回滚",
+      "ok": true,
+      "detail": "全部拒绝并回滚"
+    },
+    {
+      "id": "D04/D06",
+      "name": "A 搜索 / 统计 / 报表只计算 A：关键词只命中 B 时计数为 0；金额与夹具一致",
+      "ok": true,
+      "detail": "A 90/20/70/30/60，B 200/50/150/60/140"
+    },
+    {
+      "id": "D05",
+      "name": "A 读 B 订单直链 / 子表 / 扫码：不存在于当前上下文",
+      "ok": true,
+      "detail": "404 / null"
+    },
+    {
+      "id": "D07",
+      "name": "A 全量同步技师（含删除）只影响 A；B 同名技师 / 订单不变",
+      "ok": true,
+      "detail": "仅 A 变化"
+    },
+    {
+      "id": "D08/D09",
+      "name": "单权限用户提交其他目录分区 403；允许分区更新且未提交分区不清空；products 要求双权限",
+      "ok": true,
+      "detail": "分区授权正确"
+    },
+    {
+      "id": "D10",
+      "name": "旧 /api/repairs 集合入口 410/405；/api/clients GET 410",
+      "ok": true,
+      "detail": "410/405"
+    },
+    {
+      "id": "D11",
+      "name": "相同会话先 A 后 B：响应头 X-Portal-Id 正确，无共享缓存",
+      "ok": true,
+      "detail": "无混入"
+    },
+    {
+      "id": "D12",
+      "name": "小资源 GET（catalog / attributes / technicians）不读取全量维修单 / 客户",
+      "ok": true,
+      "detail": "三个小资源接口 7ms（源码：getBootstrapData 不再包含 repairs/clients；见 data-store.getBootstrapData）"
+    },
+    {
+      "id": "C01",
+      "name": "更新 / 删除已有维修单省略 updatedAt 400、非法 400、过期 409；数据与 revision 不变",
+      "ok": true,
+      "detail": "400/409"
+    },
+    {
+      "id": "C02",
+      "name": "两个独立请求用同一版本更新金额：一成功一 409；同毫秒版本递增；createOnly 不能更新已有对象",
+      "ok": true,
+      "detail": "乐观锁有效"
+    },
+    {
+      "id": "C03",
+      "name": "更新与删除并发；锁单后普通员工提交 403；有保修来源的原单删除 409",
+      "ok": true,
+      "detail": "保护有效"
+    },
+    {
+      "id": "C04/C05",
+      "name": "两人读取相同 revision 后保存整组目录 / 设置：先提交成功，后提交 409；缺版本 400；A/B 不共用锁",
+      "ok": true,
+      "detail": "版本冲突正确"
+    },
+    {
+      "id": "B01",
+      "name": "A 备份 / 导出 / 下载只包含 A，v2 元数据一致，不含账号 / 成员 / 会话 / 密码 / 权限字段",
+      "ok": true,
+      "detail": "备份只含 A"
+    },
+    {
+      "id": "B02",
+      "name": "A 恢复 B 快照 id 404；伪造 sourcePortalId 拒绝；用 B 的 id/token 导入冲突回滚",
+      "ok": true,
+      "detail": "拒绝且回滚"
+    },
+    {
+      "id": "B03/B04",
+      "name": "A 恢复自身快照：A 正确恢复且有安全快照、旧版本失效、revision 递增；身份 / 成员 / 门户元数据与 B 完全不变",
+      "ok": true,
+      "detail": "恢复正确、身份不变"
+    },
+    {
+      "id": "B05",
+      "name": "含 users 的旧格式 JSON / 无门户标记备份：身份字段剔除；只有默认门户显式确认可导入；B 拒绝",
+      "ok": true,
+      "detail": "身份字段清洗一致"
+    },
+    {
+      "id": "B06",
+      "name": "缺客户引用 / 重复主键 / 损坏 JSON：校验失败，A/B 原数据与 revision 保持",
+      "ok": true,
+      "detail": "校验失败不落库"
+    },
+    {
+      "id": "B07/B08",
+      "name": "同门户当日 20 个并发 bootstrap 只产生一份 auto；A/B 各自一份；仅创建备份不递增业务 revision",
+      "ok": true,
+      "detail": "唯一约束 + 不增 revision"
+    },
+    {
+      "id": "B09",
+      "name": "A 超过 60 份备份剪枝只剪 A，B 数量不变",
+      "ok": true,
+      "detail": "每门户 60 份"
+    },
+    {
+      "id": "B10",
+      "name": "普通员工导入 / 恢复被拒；管理员旧 localStorage 导入只写当前门户",
+      "ok": true,
+      "detail": "权限与范围正确"
+    },
+    {
+      "id": "P01/P02/P03",
+      "name": "公共 token 显示各自门户设置；无内部备注 / 成本；无效 token 与停用门户统一不可用；参数不能切换归属",
+      "ok": true,
+      "detail": "公共页按订单门户"
+    },
+    {
+      "id": "G20",
+      "name": "非成员系统主管理员直接读 B 订单 / 报表 / 备份 403；显式加入后按成员权限访问",
+      "ok": true,
+      "detail": "两条授权链分离"
+    },
+    {
+      "id": "G17",
+      "name": "A/B 共享员工只在 B 改权 / 移出：B 即时生效，A 不变，不重置密码 / 不全局退出",
+      "ok": true,
+      "detail": "只影响 B"
+    },
+    {
+      "id": "G11/G12/G13/A11",
+      "name": "停用 B：业务写拒绝、公共页不可用、系统仍可改名 / 分配 / 启用；停用与业务保存并发；重新启用数据不丢",
+      "ok": true,
+      "detail": "停用 / 启用正确"
+    },
+    {
+      "id": "G11b",
+      "name": "停用全部门户后系统主管理员仍能列出并重新启用；无 X-Portal-Id 不需要业务 bootstrap",
+      "ok": true,
+      "detail": "可恢复"
+    },
+    {
+      "id": "S04",
+      "name": "非法登录 JSON / 类型 400；错误账号密码 401；异常长度哈希安全 401；连续失败限流 429",
+      "ok": true,
+      "detail": "输入 / 限流正确"
+    },
+    {
+      "id": "U10",
+      "name": "FormData 上传携带门户上下文且 multipart 边界正确（外部历史导入 / 备份文件）",
+      "ok": true,
+      "detail": "上传带门户上下文"
+    },
+    {
+      "id": "R03",
+      "name": "错误响应不回显密码 / 哈希 / SQL；带 requestId",
+      "ok": true,
+      "detail": "错误形状统一"
+    }
+  ]
+}

@@ -1,121 +1,138 @@
-import { authErrorResponse, hashPassword, normalizedPagePermissions, PAGE_PERMISSION_KEYS, requireStaff } from "@/lib/auth";
-import { getRevisionPatch } from "@/lib/data-store";
-import { prisma } from "@/lib/prisma";
+import { hashPassword, normalizedPagePermissions, PAGE_PERMISSION_KEYS, parsePagePermissions, revokeStaffSessions, validateEmail, validatePassword, validatePersonName, validateUsername } from "@/lib/auth";
+import { badRequest, conflict, errorResponse, forbidden, notFound, readJsonBody, requestIdOf } from "@/lib/api-errors";
+import { assertNoPortalOverride, portalJson, requirePortalContext } from "@/lib/portal-context";
+import { withPortalWrite } from "@/lib/portal-write";
+import { listPortalUsers } from "@/lib/data-store";
+import { serializeMemberUser } from "@/lib/portal-store";
+import { securityLog } from "@/lib/system-admin";
 
-export async function GET() {
+// 原员工页：只针对当前门户成员。
+// - 新建员工：创建未被使用的全局用户名，并在同一事务中加入当前门户；已存在的用户名冲突，不认领、不改密码、不加入。
+// - 修改本门户角色 / 页面权限：只改 PortalMember；最后一位门户管理员不得移除或降级（锁内检查）。
+// - 修改姓名 / 用户名 / 邮箱 / 密码属于全局身份：只允许编辑「只属于本门户且不是系统主管理员」的账号；
+//   多门户账号与系统主管理账号的全局身份 / 密码由受控应急 CLI 处理（防止门店管理员重置密码接管系统管理）。
+// - 删除员工 = 移出当前门户：只删除 PortalMember，不删除全局 Staff。
+// - 所有网页写 API 拒绝 isSystemAdmin 字段。
+
+const ALLOWED_KEYS = ["id", "name", "username", "email", "password", "isAdmin", "pagePermissions", "expectedRevision", "portalId"];
+const throwBad = (message) => { throw badRequest(message); };
+
+export async function GET(request) {
+  const requestId = requestIdOf(request);
   try {
-    await requireAdminStaff();
-    return Response.json(await staffList());
+    const ctx = await requirePortalContext(request, { admin: true });
+    return portalJson(ctx, await listPortalUsers(ctx));
   } catch (error) {
-    return authErrorResponse(error);
+    return errorResponse(error, { requestId });
   }
 }
 
 export async function POST(request) {
+  const requestId = requestIdOf(request);
   try {
-    const currentStaff = await requireAdminStaff();
-    const body = await request.json();
-    const saved = await upsertStaff(body);
-    return Response.json({
-      user: serializeStaff(saved),
-      users: await staffList(),
-      currentUser: saved.id === currentStaff.id ? serializeStaff(saved) : null,
-      _revisionPatch: await getRevisionPatch(["users"])
+    const ctx = await requirePortalContext(request, { admin: true });
+    const body = await readJsonBody(request);
+    assertNoPortalOverride(ctx, body);
+    if (body.isSystemAdmin !== undefined) throw badRequest("不允许通过网页设置系统管理员身份");
+    const unknown = Object.keys(body).filter((key) => !ALLOWED_KEYS.includes(key));
+    if (unknown.length) throw badRequest(`员工请求包含不允许的字段：${unknown.slice(0, 5).join(", ")}`);
+    const staffId = String(body.id || "").trim();
+    if (body.isAdmin !== undefined && typeof body.isAdmin !== "boolean") throw badRequest("isAdmin 必须是布尔值");
+    const isAdmin = body.isAdmin === true;
+    const pagePermissions = isAdmin ? [...PAGE_PERMISSION_KEYS] : parsePagePermissions(body.pagePermissions, throwBad);
+    const password = body.password === undefined || body.password === null || body.password === "" ? "" : validatePassword(body.password, throwBad);
+
+    const { result, revision } = await withPortalWrite(ctx, { staffIds: staffId ? [staffId] : [], expectedRevision: body.expectedRevision }, async (tx, { lockedStaff }) => {
+      if (!staffId) {
+        const name = validatePersonName(body.name, throwBad);
+        const username = validateUsername(body.username, throwBad);
+        const email = validateEmail(body.email, throwBad);
+        if (!password) throw badRequest("新员工必须设置密码");
+        const usernameOwner = await tx.staff.findUnique({ where: { username }, select: { id: true } });
+        if (usernameOwner) throw conflict("员工用户名已被使用，请换一个用户名", "USERNAME_TAKEN");
+        const created = await tx.staff.create({
+          data: { name, username, email, passwordHash: hashPassword(password), isSystemAdmin: false, memberships: { create: { portalId: ctx.portalId, isAdmin, pagePermissions } } }
+        });
+        const member = await tx.portalMember.findUnique({ where: { staffId_portalId: { staffId: created.id, portalId: ctx.portalId } } });
+        return { staff: created, member, created: true };
+      }
+
+      const locked = lockedStaff.find((row) => row.id === staffId);
+      const member = locked ? await tx.portalMember.findUnique({ where: { staffId_portalId: { staffId, portalId: ctx.portalId } } }) : null;
+      if (!locked || !member) throw notFound("没有找到员工", "STAFF_NOT_FOUND");
+      const target = await tx.staff.findUnique({ where: { id: staffId } });
+
+      const name = body.name === undefined ? target.name : validatePersonName(body.name, throwBad);
+      const username = body.username === undefined ? target.username : validateUsername(body.username, throwBad);
+      const email = body.email === undefined ? target.email : validateEmail(body.email, throwBad);
+      const identityChanged = name !== target.name || username !== target.username || email !== target.email || Boolean(password);
+      if (identityChanged) {
+        const membershipCount = await tx.portalMember.count({ where: { staffId } });
+        if (target.isSystemAdmin || membershipCount !== 1) {
+          throw forbidden("该账号属于多个门户或是系统主管理员，其姓名、用户名、邮箱和密码不能在门店员工页修改", "IDENTITY_PROTECTED");
+        }
+        if (username !== target.username) {
+          const usernameOwner = await tx.staff.findUnique({ where: { username }, select: { id: true } });
+          if (usernameOwner && usernameOwner.id !== staffId) throw conflict("员工用户名重复", "USERNAME_TAKEN");
+        }
+      }
+      if (member.isAdmin && !isAdmin) {
+        const adminCount = await tx.portalMember.count({ where: { portalId: ctx.portalId, isAdmin: true } });
+        if (adminCount <= 1) throw conflict("最后一个管理员不可删除或降级", "LAST_PORTAL_ADMIN");
+      }
+      const identityData = identityChanged ? { name, username, email, ...(password ? { passwordHash: hashPassword(password) } : {}) } : null;
+      const updatedStaff = identityData ? await tx.staff.update({ where: { id: staffId }, data: identityData }) : target;
+      if (password) await revokeStaffSessions(tx, staffId);
+      const updatedMember = await tx.portalMember.update({ where: { staffId_portalId: { staffId, portalId: ctx.portalId } }, data: { isAdmin, pagePermissions } });
+      return { staff: updatedStaff, member: updatedMember, created: false, passwordChanged: Boolean(password), identityChanged };
+    });
+
+    securityLog({
+      action: result.created ? "portal.staff.create" : "portal.staff.update",
+      actorStaffId: ctx.staff.id,
+      portalId: ctx.portalId,
+      targetStaffId: result.staff.id,
+      identityChanged: Boolean(result.identityChanged),
+      passwordChanged: Boolean(result.passwordChanged),
+      to: { isAdmin: result.member.isAdmin, pagePermissions: normalizedPagePermissions(result.member) },
+      result: "ok"
+    });
+    const user = serializeMemberUser(result.staff, result.member);
+    return portalJson(ctx, {
+      user,
+      users: await listPortalUsers(ctx),
+      currentUser: user.id === ctx.staff.id ? user : null,
+      passwordChanged: Boolean(result.passwordChanged),
+      _revision: revision
     });
   } catch (error) {
-    return authErrorResponse(error);
+    return errorResponse(error, { requestId });
   }
 }
 
 export async function DELETE(request) {
+  const requestId = requestIdOf(request);
   try {
-    const currentStaff = await requireAdminStaff();
-    const body = await request.json();
+    const ctx = await requirePortalContext(request, { admin: true });
+    const body = await readJsonBody(request);
+    assertNoPortalOverride(ctx, body);
     const staffId = String(body?.id || "").trim();
-    if (!staffId) throwBadRequest("缺少员工");
-    if (staffId === currentStaff.id) throwBadRequest("当前登录账号不可删除");
+    if (!staffId) throw badRequest("缺少员工");
+    if (staffId === ctx.staff.id) throw badRequest("当前登录账号不可移出，请由其他管理员操作");
 
-    const existing = await prisma.staff.findUnique({ where: { id: staffId } });
-    if (!existing) throwNotFound("没有找到员工");
-    if (existing.isAdmin) await ensureNotLastAdmin(staffId);
-
-    await prisma.staff.delete({ where: { id: staffId } });
-    return Response.json({ ok: true, users: await staffList(), _revisionPatch: await getRevisionPatch(["users"]) });
+    const { revision } = await withPortalWrite(ctx, { staffIds: [staffId], expectedRevision: body.expectedRevision }, async (tx) => {
+      const member = await tx.portalMember.findUnique({ where: { staffId_portalId: { staffId, portalId: ctx.portalId } } });
+      if (!member) throw notFound("没有找到员工", "STAFF_NOT_FOUND");
+      if (member.isAdmin) {
+        const adminCount = await tx.portalMember.count({ where: { portalId: ctx.portalId, isAdmin: true } });
+        if (adminCount <= 1) throw conflict("最后一个管理员不可删除或降级", "LAST_PORTAL_ADMIN");
+      }
+      await tx.portalMember.delete({ where: { staffId_portalId: { staffId, portalId: ctx.portalId } } });
+      return true;
+    });
+    securityLog({ action: "portal.staff.remove", actorStaffId: ctx.staff.id, portalId: ctx.portalId, targetStaffId: staffId, result: "ok" });
+    return portalJson(ctx, { ok: true, users: await listPortalUsers(ctx), _revision: revision });
   } catch (error) {
-    return authErrorResponse(error);
+    return errorResponse(error, { requestId });
   }
-}
-
-async function requireAdminStaff() {
-  const staff = await requireStaff();
-  if (!staff.isAdmin) {
-    const error = new Error("只有管理员可管理员工");
-    error.status = 403;
-    throw error;
-  }
-  return staff;
-}
-
-async function upsertStaff(body = {}) {
-  const staffId = String(body.id || "").trim();
-  const name = String(body.name || "").trim();
-  const username = String(body.username || "").trim();
-  const email = String(body.email || "").trim();
-  const password = String(body.password || "");
-  const isAdmin = Boolean(body.isAdmin);
-
-  if (!name) throwBadRequest("员工姓名不能为空");
-  if (!username) throwBadRequest("员工用户名不能为空");
-
-  const existing = staffId ? await prisma.staff.findUnique({ where: { id: staffId } }) : null;
-  if (staffId && !existing) throwNotFound("没有找到员工");
-  if (!existing && !password) throwBadRequest("新员工必须设置密码");
-
-  const usernameOwner = await prisma.staff.findUnique({ where: { username } });
-  if (usernameOwner && usernameOwner.id !== staffId) throwConflict("员工用户名重复");
-  if (existing?.isAdmin && !isAdmin) await ensureNotLastAdmin(staffId);
-
-  const pagePermissions = isAdmin ? PAGE_PERMISSION_KEYS : normalizedPagePermissions({ pagePermissions: body.pagePermissions });
-  const data = { name, username, email, isAdmin, pagePermissions };
-  if (password) data.passwordHash = hashPassword(password);
-
-  if (existing) return prisma.staff.update({ where: { id: staffId }, data });
-  return prisma.staff.create({ data: { id: staffId || undefined, ...data, passwordHash: data.passwordHash } });
-}
-
-async function ensureNotLastAdmin(staffId) {
-  const adminCount = await prisma.staff.count({ where: { isAdmin: true } });
-  const target = await prisma.staff.findUnique({ where: { id: staffId }, select: { isAdmin: true } });
-  if (target?.isAdmin && adminCount <= 1) throwBadRequest("最后一个管理员不可删除或降级");
-}
-
-async function staffList() {
-  const rows = await prisma.staff.findMany({ orderBy: { createdAt: "asc" } });
-  return rows.map(serializeStaff);
-}
-
-function serializeStaff(staff) {
-  const { passwordHash, sessionTokenHash, sessionExpiresAt, ...safeStaff } = staff;
-  return {
-    ...safeStaff,
-    pagePermissions: staff.isAdmin ? PAGE_PERMISSION_KEYS : normalizedPagePermissions(staff)
-  };
-}
-
-function throwBadRequest(message) {
-  const error = new Error(message);
-  error.status = 400;
-  throw error;
-}
-
-function throwConflict(message) {
-  const error = new Error(message);
-  error.status = 409;
-  throw error;
-}
-
-function throwNotFound(message) {
-  const error = new Error(message);
-  error.status = 404;
-  throw error;
 }

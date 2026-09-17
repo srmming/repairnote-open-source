@@ -151,3 +151,12 @@ export function normalizeStatus(status) {
   const map = { reserva: "预定", Reserva: "预定", "预定已到货": "预定到货", "Reserva recibida": "预定到货", "Reserva llegado": "预定到货", "待开始": "预定", "En espera": "预定", Reparando: "维修中", Terminado: "完成", Finalizado: "完成", Entregado: "已取走", Cerrado: "取消", Cancelar: "取消", "关闭": "取消", "待检测": "预定", "处理中": "维修中", "等客户确认": "预定到货", "已完成": "完成", "拒保": "取消" };
   return map[status] || status || "预定";
 }
+
+// 设置字段白名单（服务端只保留这些键；前端提交前也按它过滤）。
+export const SETTING_KEYS = [
+  "phone", "shopName", "shopAddress", "shopTaxId", "taxRate", "uiLanguage", "printLanguage", "publicLanguage", "publicStatusLanguage", "customerLanguage",
+  "scanShortcut", "defaultWarrantyDays", "defaultWarrantyMonths", "hideIssuer", "allowOrderUnlock", "enableOrderLock",
+  "showPasswordSection", "showPhotoSection", "showSignatureSection", "showQrNoticeSection",
+  "reservationTerms", "repairTerms", "warrantyTerms", "whatsappProgressTemplate", "publicBaseUrl",
+  "productCatalogCategories", "productServiceCategories", "productPartCategories"
+];

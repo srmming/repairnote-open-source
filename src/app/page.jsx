@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   BarChart3,
   Banknote,
+  Building2,
   Camera,
   CalendarClock,
   ChevronDown,
@@ -124,6 +125,10 @@ import {
   nonNegativeMoney,
   withSortOrders
 } from "@/lib/normalize-client";
+import { SETTING_KEYS } from "@/lib/seed-data";
+import { LOGIN_ROUTE, PICKER_ROUTE, PortalApiContext, SYSTEM_ROUTE, buildPortalHash, createPortalApi, identityRequest, parsePortalHash, usePortalApi } from "@/lib/portal-client";
+import { PortalPicker } from "@/components/portal-picker";
+import { PortalManagementPage } from "@/components/portal-management";
 
 const ICON = { size: 16, strokeWidth: 1.75 };
 const ICON_SM = { size: 14, strokeWidth: 1.75 };
@@ -283,6 +288,20 @@ const uiText = {
     login: "登录",
     loginError: "账号或密码不正确",
     userFallback: "员工",
+    currentPortal: "当前门户",
+    switchPortal: "切换门户",
+    portalManagement: "门户管理",
+    portalManagementHint: "新增门户、修改名称、启用 / 停用，以及把已有账号分配到门户（仅系统主管理员）。",
+    openPortalManagement: "打开门户管理",
+    noPagePermission: "当前门户尚未分配页面权限，请联系门户管理员。",
+    loadFailedRetry: "加载失败，请重试",
+    retry: "重试",
+    savingWait: "正在保存，请等保存完成后再切换。",
+    removeFromPortal: "移出门户",
+    confirmRemoveStaff: "确认把该员工移出当前门户？账号本身不会被删除。",
+    staffIdentityProtected: "该账号属于多个门户或是系统主管理员，姓名 / 用户名 / 邮箱 / 密码不能在这里修改。",
+    portalLost: "当前门户已停用或你已被移出，请重新选择门户。",
+    passwordChangedRelogin: "密码已修改，请重新登录。",
     repairs: "维修单",
     warranties: "保修单",
     clients: "客户",
@@ -789,6 +808,20 @@ const uiText = {
     login: "Entrar",
     loginError: "Usuario o contraseña incorrectos",
     userFallback: "Empleado",
+    currentPortal: "Portal actual",
+    switchPortal: "Cambiar de portal",
+    portalManagement: "Gestión de portales",
+    portalManagementHint: "Crear portales, renombrarlos, activarlos / desactivarlos y asignar cuentas existentes (solo administrador del sistema).",
+    openPortalManagement: "Abrir gestión de portales",
+    noPagePermission: "Todavía no tienes permisos de página en este portal. Contacta con el administrador del portal.",
+    loadFailedRetry: "Error al cargar, reintenta",
+    retry: "Reintentar",
+    savingWait: "Guardando; espera a que termine antes de cambiar.",
+    removeFromPortal: "Quitar del portal",
+    confirmRemoveStaff: "¿Quitar a este empleado del portal actual? La cuenta no se elimina.",
+    staffIdentityProtected: "Esta cuenta pertenece a varios portales o es administrador del sistema; el nombre, usuario, email y contraseña no se pueden cambiar aquí.",
+    portalLost: "Este portal se ha desactivado o ya no eres miembro. Elige otro portal.",
+    passwordChangedRelogin: "Contraseña cambiada, vuelve a iniciar sesión.",
     repairs: "Reparaciones",
     warranties: "Garantías",
     clients: "Clientes",
@@ -1320,12 +1353,14 @@ function useMobileLayout() {
   return isMobile;
 }
 
-export default function AppPage() {
+function Workspace({ identity, portal, api, initialRoute, onLogout, onSwitchPortal, onOpenSystem, onPortalLost, registerLeaveGuard, theme, changeTheme, portalCount }) {
   const [mounted, setMounted] = useState(false);
   const [data, setData] = useState(seedData);
-  const [route, setRoute] = useState("/login");
+  const [route, setRoute] = useState(initialRoute || "/dashboard/repairs");
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const pendingWritesRef = useRef(0);
   const [modal, setModal] = useState(null);
   const [toastText, setToastText] = useState("");
   const [filters, setFilters] = useState(() => {
@@ -1377,7 +1412,6 @@ export default function AppPage() {
   const [currentBrandId, setCurrentBrandId] = useState("");
   const [repairDraft, setRepairDraft] = useState(null);
   const [catalogTab, setCatalogTab] = useState("services");
-  const [theme, setTheme] = useState("light");
   const [scanSearchOpen, setScanSearchOpen] = useState(false);
   const [scanSearchQuery, setScanSearchQuery] = useState("");
   const [scanSearchMessage, setScanSearchMessage] = useState("");
@@ -1391,34 +1425,46 @@ export default function AppPage() {
   const saveQueueRef = useRef(Promise.resolve());
   const lang = getLang(data.settings);
   const t = useMemo(() => makeT(lang), [lang]);
-  const changeTheme = (nextTheme) => {
-    const normalized = nextTheme === "dark" ? "dark" : "light";
-    setTheme(normalized);
-    applyThemePreference(normalized);
-  };
 
   useEffect(() => {
     dataRef.current = data;
   }, [data]);
+
+  // 写队列：所有写请求经过这里计数；切换门户 / 进入门户管理前必须等待队列结束（取消浏览器请求不等于撤销已到达服务器的写操作）。
+  function enqueueWrite(task) {
+    pendingWritesRef.current += 1;
+    const run = saveQueueRef.current.catch(() => {}).then(task).finally(() => {
+      pendingWritesRef.current = Math.max(0, pendingWritesRef.current - 1);
+    });
+    return run;
+  }
+
+  useEffect(() => {
+    if (!registerLeaveGuard) return undefined;
+    return registerLeaveGuard({
+      isDirty: () => hasUnsavedDetailChanges(),
+      isSaving: () => pendingWritesRef.current > 0
+    });
+  }, [registerLeaveGuard]);
 
   useEffect(() => {
     routeRef.current = route;
   }, [route]);
 
   useEffect(() => {
-    const initialTheme = readThemePreference();
-    setTheme(initialTheme);
-    applyThemePreference(initialTheme);
-
-    const initialRoute = window.location.hash.replace(/^#/, "") || "/login";
-    routeRef.current = initialRoute;
-    setRoute(initialRoute);
+    const parsedInitial = parsePortalHash(window.location.hash);
+    const startRoute = parsedInitial.kind === "workspace" && parsedInitial.portalId === portal.id ? parsedInitial.logicalRoute : (initialRoute || "/dashboard/repairs");
+    routeRef.current = startRoute;
+    setRoute(startRoute);
     setMounted(true);
     bootstrap();
 
     const onHash = () => {
-      const nextRoute = window.location.hash.replace(/^#/, "") || "/login";
-      const previousRoute = routeRef.current || "/login";
+      const parsed = parsePortalHash(window.location.hash);
+      // 不是本门户的工作区路由（切换门户 / 门户选择 / 门户管理 / 登录）由外层身份壳处理。
+      if (parsed.kind !== "workspace" || parsed.portalId !== portal.id) return;
+      const nextRoute = parsed.logicalRoute;
+      const previousRoute = routeRef.current || "/dashboard/repairs";
       if (nextRoute === previousRoute) return;
       if (restoringHashRef.current) {
         restoringHashRef.current = false;
@@ -1430,7 +1476,7 @@ export default function AppPage() {
         const shouldLeave = window.confirm(makeT(getLang(dataRef.current.settings))("unsavedChangesConfirm"));
         if (!shouldLeave) {
           restoringHashRef.current = true;
-          window.location.hash = previousRoute;
+          window.location.hash = buildPortalHash(portal.id, previousRoute);
           return;
         }
       }
@@ -1460,11 +1506,30 @@ export default function AppPage() {
   }, []);
 
   useEffect(() => {
-    if (!mounted) return;
-    if (!session && route !== "/login") navigate("/login");
-    if (session && route === "/login") navigate("/dashboard/repairs");
-    if (session && route !== "/login" && !canAccessRoute(session, route)) navigate(firstAllowedRoute(session));
+    if (!mounted || !session) return;
+    if (route === "/login" || !route.startsWith("/dashboard")) navigate(firstAllowedRoute(session, identity));
+    else if (!canAccessRoute(session, route, identity)) navigate(firstAllowedRoute(session, identity));
   }, [session, route, mounted]);
+
+  // 进入 / 恢复前台、窗口获得焦点时刷新成员权限；被移出或门户停用立即卸载工作区。
+  useEffect(() => {
+    if (!session) return undefined;
+    let last = Date.now();
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - last < 30000) return;
+      last = Date.now();
+      api.get("/api/bootstrap").then((lightData) => {
+        if (lightData?.currentUser) setSession((current) => ({ ...(current || {}), ...lightData.currentUser }));
+      }).catch(() => {});
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [session, api]);
 
   useEffect(() => {
     if (!session) return undefined;
@@ -1515,7 +1580,7 @@ export default function AppPage() {
       preservingRepairDraftRouteRef.current = "";
       setRepairDraft(null);
     }
-    window.location.hash = nextRoute;
+    window.location.hash = buildPortalHash(portal.id, nextRoute);
     routeRef.current = nextRoute;
     setRoute(nextRoute);
     return true;
@@ -1529,7 +1594,7 @@ export default function AppPage() {
     }
     let repair = null;
     try {
-      const result = await apiGet(`/api/repairs/lookup?value=${encodeURIComponent(value)}`);
+      const result = await api.get(`/api/repairs/lookup?value=${encodeURIComponent(value)}`);
       repair = result.repair || null;
     } catch {
       repair = null;
@@ -1556,17 +1621,19 @@ export default function AppPage() {
 
   async function bootstrap() {
     setLoading(true);
+    setLoadError("");
     try {
-      const me = await apiGet("/api/auth/me");
-      setSession(me.user);
-      if (!me.user) return;
-      const lightData = await apiGet("/api/bootstrap");
+      const lightData = await api.get("/api/bootstrap");
       const normalized = normalizeData(lightData);
       confirmedDataRef.current = normalized;
       dataRef.current = normalized;
       setData(normalized);
-    } catch {
-      setSession(null);
+      setSession(lightData.currentUser || null);
+    } catch (error) {
+      // 401 / 门户 403 由 api 实例的回调处理（清身份 / 回门户选择）；其余是临时错误，保留登录并提供重试。
+      if (error?.code === "STALE_WORKSPACE") return;
+      if (error?.status === 401 || (error?.status === 403 && ["PORTAL_ACCESS_DENIED", "PORTAL_INACTIVE"].includes(error?.code))) return;
+      setLoadError(error?.message || t("loadFailedRetry"));
     } finally {
       setLoading(false);
     }
@@ -1580,7 +1647,7 @@ export default function AppPage() {
     };
     setData(dataRef.current);
     try {
-      const result = await apiJson("/api/clients", "POST", optimistic);
+      const result = await api.json("/api/clients", "POST", { ...optimistic, createOnly: !client.id, updatedAt: client.id ? (client.updatedAt || "") : undefined });
       const saved = result.client || result;
       const revision = revisionFromSave(dataRef.current._revision, result);
       dataRef.current = {
@@ -1611,7 +1678,7 @@ export default function AppPage() {
     dataRef.current = optimistic;
     setData(optimistic);
     try {
-      const result = await apiJson("/api/clients", "DELETE", { id: clientId });
+      const result = await api.json("/api/clients", "DELETE", { id: clientId });
       const nextData = {
         ...dataRef.current,
         _revision: revisionFromSave(dataRef.current._revision, result),
@@ -1634,15 +1701,15 @@ export default function AppPage() {
     }
   }
 
-  async function saveNonRepairResource(resource, updater) {
+  async function saveNonRepairResource(resource, updater, options = {}) {
     const optimistic = typeof updater === "function" ? updater(dataRef.current) : updater;
     dataRef.current = optimistic;
     setData(optimistic);
 
-    saveQueueRef.current = saveQueueRef.current.catch(() => {}).then(async () => {
+    saveQueueRef.current = enqueueWrite(async () => {
       try {
-        const body = nonRepairResourcePayload(resource, optimistic);
-        const saved = await apiJson(`/api/${resource}`, "POST", body);
+        const body = nonRepairResourcePayload(resource, optimistic, options.section, confirmedDataRef.current._revision);
+        const saved = await api.json(`/api/${resource}`, "POST", body);
         const nextData = mergeNonRepairSaveResult(dataRef.current, saved);
         const nextConfirmed = mergeNonRepairSaveResult(confirmedDataRef.current, saved);
         confirmedDataRef.current = nextConfirmed;
@@ -1666,10 +1733,12 @@ export default function AppPage() {
     dataRef.current = optimistic;
     setData(optimistic);
 
-    saveQueueRef.current = saveQueueRef.current.catch(() => {}).then(async () => {
+    saveQueueRef.current = enqueueWrite(async () => {
       try {
-        const currentRepair = findRepair(dataRef.current, nextRepair.id) || nextRepair;
-        const saved = await apiJson(`/api/repairs/${encodeURIComponent(nextRepair.id)}`, "PUT", { repair: { ...nextRepair, updatedAt: currentRepair.updatedAt || nextRepair.updatedAt }, client: nextClient });
+        const currentRepair = findRepair(confirmedDataRef.current, nextRepair.id) || findRepair(dataRef.current, nextRepair.id) || nextRepair;
+        const updatedAt = currentRepair.updatedAt || nextRepair.updatedAt || "";
+        // 新建（没有服务端版本）显式 createOnly；已有订单必须带旧 updatedAt。
+        const saved = await api.json(`/api/repairs/${encodeURIComponent(nextRepair.id)}`, "PUT", { repair: { ...nextRepair, updatedAt }, client: nextClient, createOnly: !updatedAt });
         const savedRepair = normalizeRepairDraft(saved.repair || nextRepair);
         const nextData = mergeRepairAndClient(dataRef.current, savedRepair, saved.client || nextClient, saved._revision);
         const nextConfirmed = mergeRepairAndClient(confirmedDataRef.current, savedRepair, saved.client || nextClient, saved._revision);
@@ -1694,10 +1763,10 @@ export default function AppPage() {
     dataRef.current = optimistic;
     setData(optimistic);
 
-    saveQueueRef.current = saveQueueRef.current.catch(() => {}).then(async () => {
+    saveQueueRef.current = enqueueWrite(async () => {
       try {
         const currentRepair = findRepair(confirmedDataRef.current, repairId) || findRepair(dataRef.current, repairId);
-        const saved = await apiJson(`/api/repairs/${encodeURIComponent(repairId)}`, "DELETE", { updatedAt: currentRepair?.updatedAt || "" });
+        const saved = await api.json(`/api/repairs/${encodeURIComponent(repairId)}`, "DELETE", { updatedAt: currentRepair?.updatedAt || "" });
         const nextData = removeRepairFromData(dataRef.current, repairId, saved._revision);
         const nextConfirmed = removeRepairFromData(confirmedDataRef.current, repairId, saved._revision);
         confirmedDataRef.current = nextConfirmed;
@@ -1716,10 +1785,14 @@ export default function AppPage() {
   }
 
   async function saveStaffRecord(staffPayload) {
-    saveQueueRef.current = saveQueueRef.current.catch(() => {}).then(async () => {
+    saveQueueRef.current = enqueueWrite(async () => {
       try {
-        const saved = await apiJson("/api/staff", "POST", staffPayload);
+        const saved = await api.json("/api/staff", "POST", staffPayload);
         applyStaffSaveResult(saved);
+        if (saved.passwordChanged && saved.user?.id === identity?.id) {
+          showToast(t("passwordChangedRelogin"));
+          window.setTimeout(() => onLogout({ silent: true }), 800);
+        }
         return true;
       } catch (error) {
         showToast(error.message || t("saveFailed"));
@@ -1730,9 +1803,9 @@ export default function AppPage() {
   }
 
   async function deleteStaffRecord(staffId) {
-    saveQueueRef.current = saveQueueRef.current.catch(() => {}).then(async () => {
+    saveQueueRef.current = enqueueWrite(async () => {
       try {
-        const saved = await apiJson("/api/staff", "DELETE", { id: staffId });
+        const saved = await api.json("/api/staff", "DELETE", { id: staffId });
         applyStaffSaveResult(saved);
         return true;
       } catch (error) {
@@ -1757,7 +1830,8 @@ export default function AppPage() {
 
   async function saveSettingsOnly(nextSettings) {
     try {
-      const result = await apiJson("/api/settings", "POST", nextSettings);
+      const settingsPayload = Object.fromEntries(SETTING_KEYS.filter((key) => nextSettings?.[key] !== undefined).map((key) => [key, nextSettings[key]]));
+      const result = await api.json("/api/settings", "POST", { settings: settingsPayload, expectedRevision: confirmedDataRef.current._revision });
       const settings = result.settings || nextSettings || {};
       const settingsUpdatedAt = result._settingsUpdatedAt || new Date().toISOString();
       const nextData = {
@@ -1790,16 +1864,22 @@ export default function AppPage() {
   if (!mounted || loading) return null;
 
   if (!session) {
-    return <Login theme={theme} onThemeChange={changeTheme} onLogin={async (username, password) => {
-      const result = await apiJson("/api/auth/login", "POST", { username, password });
-      const lightData = await apiGet("/api/bootstrap");
-      const normalized = normalizeData(lightData);
-      confirmedDataRef.current = normalized;
-      dataRef.current = normalized;
-      setData(normalized);
-      setSession(result.user);
-      navigate("/dashboard/repairs");
-    }} />;
+    return (
+      <main className="login-page">
+        <Card className="login-card">
+          <CardContent>
+            <div className="portal-picker-error">
+              <span>{loadError || t("loadFailedRetry")}</span>
+              <Button variant="outline" size="sm" type="button" onClick={bootstrap}><RefreshCw {...ICON_SM} /> {t("retry")}</Button>
+            </div>
+            <div className="portal-picker-actions">
+              {portalCount > 1 || identity?.isSystemAdmin ? <Button variant="outline" type="button" onClick={() => onSwitchPortal()}>{t("switchPortal")}</Button> : null}
+              <Button variant="ghost" type="button" onClick={() => onLogout()}><LogOut {...ICON_SM} /> {t("logout")}</Button>
+            </div>
+          </CardContent>
+        </Card>
+      </main>
+    );
   }
 
   const currentPath = route.split("?")[0];
@@ -1807,16 +1887,14 @@ export default function AppPage() {
 
   return (
     <div className="app-shell">
-      <Sidebar route={route} user={session} navigate={navigate} lang={lang} t={t} theme={theme} onThemeChange={changeTheme} onLanguageChange={(nextLang) => {
+      <Sidebar route={route} user={session} identity={identity} portal={portal} portalCount={portalCount} onSwitchPortal={onSwitchPortal} onOpenSystem={onOpenSystem} navigate={navigate} lang={lang} t={t} theme={theme} onThemeChange={changeTheme} onLanguageChange={(nextLang) => {
         saveSettingsOnly({ ...(dataRef.current.settings || {}), uiLanguage: nextLang, printLanguage: nextLang });
       }} onLogout={async () => {
         if (hasUnsavedDetailChanges() && !window.confirm(t("unsavedChangesConfirm"))) return;
         unsavedGuardRef.current = null;
         setRepairTopbarSave(null);
         setRepairDraft(null);
-        await apiJson("/api/auth/logout", "POST", {});
-        setSession(null);
-        navigate("/login", { force: true });
+        await onLogout();
       }} />
       <main className="main">
         <header className="topbar">
@@ -1865,6 +1943,8 @@ export default function AppPage() {
           saveNonRepairResource={saveNonRepairResource}
           toast={showToast}
           session={session}
+          identity={identity}
+          onOpenSystem={onOpenSystem}
           bootstrap={bootstrap}
           lang={lang}
           t={t}
@@ -2052,8 +2132,11 @@ function TopbarActions({ route, data, saveRepairRecord, deleteRepairRecord, navi
   return null;
 }
 
-function Sidebar({ route, user, navigate, lang, t, onLanguageChange, onLogout, theme, onThemeChange }) {
+function Sidebar({ route, user, identity, portal, portalCount = 1, onSwitchPortal, onOpenSystem, navigate, lang, t, onLanguageChange, onLogout, theme, onThemeChange }) {
   const mobileMenuRef = useRef(null);
+  const api = usePortalApi();
+  const canSwitchPortal = portalCount > 1 || Boolean(identity?.isSystemAdmin);
+  const settingsVisible = canAccessPage(user, "settings") || Boolean(identity?.isSystemAdmin);
   const go = (nextRoute) => {
     if (mobileMenuRef.current) mobileMenuRef.current.open = false;
     navigate(nextRoute);
@@ -2072,12 +2155,16 @@ function Sidebar({ route, user, navigate, lang, t, onLanguageChange, onLogout, t
     { key: "technicians", route: "/dashboard/technicians", icon: <Wrench {...ICON} />, label: t("technicians") },
     { key: "reports", route: "/dashboard/reports", icon: <BarChart3 {...ICON} />, label: t("reports") },
     { key: "finance", route: "/dashboard/finance", icon: <WalletCards {...ICON} />, label: t("finance") },
-    { key: "settings", route: "/dashboard/settings", icon: <Settings {...ICON} />, label: t("settings") },
+    ...(settingsVisible ? [{ route: "/dashboard/settings", icon: <Settings {...ICON} />, label: t("settings") }] : []),
     { key: "backup", route: "/dashboard/backup", icon: <Database {...ICON} />, label: t("backup") }
   ].filter((item) => !item.key || canSee(item.key));
   return (
     <aside className="sidebar">
       <div className="brand-title"><Wrench {...ICON} /> {t("appTitle")}</div>
+      <div className="portal-switch" title={t("currentPortal")}>
+        <span className="portal-switch-name"><Building2 {...ICON_SM} /> {portal?.name || ""}</span>
+        {canSwitchPortal ? <button type="button" className="portal-switch-button" onClick={() => onSwitchPortal?.()}>{t("switchPortal")}</button> : null}
+      </div>
       <nav className="side-menu">
         <NavItem><User {...ICON} /><span>{user?.name || user?.username || t("userFallback")}</span></NavItem>
         {canSee("repairs") ? <SideLink active={route.startsWith("/dashboard/repairs")} onClick={() => go("/dashboard/repairs")} icon={<Wrench {...ICON} />} label={t("repairs")} dot /> : null}
@@ -2095,7 +2182,7 @@ function Sidebar({ route, user, navigate, lang, t, onLanguageChange, onLogout, t
         {canSee("technicians") ? <SideLink active={route === "/dashboard/technicians"} onClick={() => go("/dashboard/technicians")} icon={<Wrench {...ICON} />} label={t("technicians")} /> : null}
         {canSee("reports") ? <SideLink active={route === "/dashboard/reports"} onClick={() => go("/dashboard/reports")} icon={<BarChart3 {...ICON} />} label={t("reports")} /> : null}
         {canSee("finance") ? <SideLink active={route === "/dashboard/finance"} onClick={() => go("/dashboard/finance")} icon={<WalletCards {...ICON} />} label={t("finance")} /> : null}
-        {canSee("settings") ? <SideLink active={route === "/dashboard/settings"} onClick={() => go("/dashboard/settings")} icon={<Settings {...ICON} />} label={t("settings")} /> : null}
+        {settingsVisible ? <SideLink active={route === "/dashboard/settings"} onClick={() => go("/dashboard/settings")} icon={<Settings {...ICON} />} label={t("settings")} /> : null}
         {canSee("backup") ? <SideLink active={route === "/dashboard/backup"} onClick={() => go("/dashboard/backup")} icon={<Database {...ICON} />} label={t("backup")} /> : null}
         {canSee("reports") ? <SideLink mobileOnly active={route === "/dashboard/reports"} onClick={() => go("/dashboard/reports")} icon={<BarChart3 {...ICON} />} label={t("reports")} /> : null}
         {canSee("finance") ? <SideLink mobileOnly active={route === "/dashboard/finance"} onClick={() => go("/dashboard/finance")} icon={<WalletCards {...ICON} />} label={t("finance")} /> : null}
@@ -2113,6 +2200,7 @@ function Sidebar({ route, user, navigate, lang, t, onLanguageChange, onLogout, t
               ))}
             </div>
             <div className="mobile-menu-footer">
+              {canSwitchPortal ? <Button variant="outline" onClick={() => onSwitchPortal?.()}><Building2 {...ICON_SM} /> {t("switchPortal")}</Button> : null}
               <Select value={lang} onChange={(event) => onLanguageChange(event.target.value)}>{languages.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select>
               <ThemeToggleButton theme={theme} onThemeChange={onThemeChange} t={t} compact />
               <Button variant="outline" onClick={onLogout}><LogOut {...ICON_SM} /> {t("logout")}</Button>
@@ -2124,7 +2212,7 @@ function Sidebar({ route, user, navigate, lang, t, onLanguageChange, onLogout, t
         <Select value={lang} onChange={(event) => onLanguageChange(event.target.value)}>{languages.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</Select>
         <ThemeToggleButton theme={theme} onThemeChange={onThemeChange} t={t} className="theme-toggle-wide" />
         <Button variant="outline" style={{ width: "100%" }} onClick={onLogout}><LogOut {...ICON_SM} /> {t("logout")}</Button>
-        <TextLink className="small-link" href="#/dashboard/repairs">{t("changelog")}</TextLink>
+        <TextLink className="small-link" href={api.href("/dashboard/repairs")}>{t("changelog")}</TextLink>
       </div>
     </aside>
   );
@@ -2139,9 +2227,12 @@ function SideLink({ active, onClick, icon, label, dot, mobileOnly, className }) 
 }
 
 function RouteView(props) {
-  const { route, session } = props;
+  const { route, session, identity } = props;
   const path = route.split("?")[0];
-  if (!canAccessRoute(session, route)) return <section className="page"><Empty>{props.t("noPermission")}</Empty></section>;
+  if (!canAccessRoute(session, route, identity)) {
+    const noPermissions = session && !session.isAdmin && normalizedPagePermissions(session).length === 0 && !identity?.isSystemAdmin;
+    return <section className="page"><Empty>{noPermissions ? props.t("noPagePermission") : props.t("noPermission")}</Empty></section>;
+  }
   if (route === "/dashboard/quick-print") return <QuickFindPage {...props} />;
   if (route === "/dashboard/clients") return <ClientsPage {...props} />;
   if (path.startsWith("/dashboard/clients/")) return <ClientOrdersPage {...props} clientId={decodeURIComponent(path.split("/").pop() || "")} />;
@@ -2185,10 +2276,12 @@ function routePermissionKey(route) {
   return "repairs";
 }
 
-function canAccessRoute(user, route) {
+function canAccessRoute(user, route, identity = null) {
   const key = routePermissionKey(route);
   if (key === "staff") return Boolean(user?.isAdmin);
   if (key === "products") return canAccessPage(user, "services") || canAccessPage(user, "modules");
+  // 仅有系统角色也必须能到达设置入口（里面只显示门户管理，不显示当前门店设置）。
+  if (key === "settings" && identity?.isSystemAdmin) return true;
   return canAccessPage(user, key);
 }
 
@@ -2199,10 +2292,11 @@ function canAccessPage(user, key) {
   return permissions.includes(key);
 }
 
-function firstAllowedRoute(user) {
+function firstAllowedRoute(user, identity = null) {
   if (user?.isAdmin) return "/dashboard/repairs";
-  const key = normalizedPagePermissions(user)[0] || "repairs";
-  return permissionRoute(key);
+  const permissions = normalizedPagePermissions(user);
+  if (!permissions.length) return identity?.isSystemAdmin ? "/dashboard/settings" : "/dashboard/repairs";
+  return permissionRoute(permissions[0]);
 }
 
 function firstAllowedCategoryRoute(user) {
@@ -2248,6 +2342,7 @@ function permissionLabel(key, t) {
 }
 
 function RepairsPage({ route, data, saveRepairRecord, navigate, filters, setFilters, toast, lang, t }) {
+  const api = usePortalApi();
   const isMobileLayout = useMobileLayout();
   const clientLookup = useMemo(() => new Map((data.clients || []).map((client) => [client.id, client])), [data.clients]);
   // 行内编辑（状态/技师/明细）后的本地覆盖层：保存成功先盖住当页旧行，等服务端刷新到位后整体清空。
@@ -2297,7 +2392,7 @@ function RepairsPage({ route, data, saveRepairRecord, navigate, filters, setFilt
     if (filters.repairsStartDate) params.set("start", filters.repairsStartDate);
     if (filters.repairsEndDate) params.set("end", filters.repairsEndDate);
     params.set("page", String(filters.repairsPage || 1));
-    apiGet(`/api/repairs/search?${params.toString()}`)
+    api.get(`/api/repairs/search?${params.toString()}`)
       .then((res) => {
         if (!active) return;
         setServerData({ rows: res.rows || [], total: res.total || 0, counts: res.counts || {}, summary: res.summary || { repairs: 0, warranties: 0 }, loading: false });
@@ -2329,7 +2424,7 @@ function RepairsPage({ route, data, saveRepairRecord, navigate, filters, setFilt
     if (orderTypeFilter) params.set("orderType", orderTypeFilter);
     if (filters.repairsStartDate) params.set("start", filters.repairsStartDate);
     if (filters.repairsEndDate) params.set("end", filters.repairsEndDate);
-    apiGet(`/api/repairs/aggregates?${params.toString()}`)
+    api.get(`/api/repairs/aggregates?${params.toString()}`)
       .then((res) => { if (active) setServerAgg({ totals: res.totals || { amount: 0, cost: 0, profit: 0 }, technicianRows: res.technicianRows || [], loading: false }); })
       .catch(() => { if (active) setServerAgg((prev) => ({ ...prev, loading: false })); });
     return () => { active = false; };
@@ -2369,7 +2464,7 @@ function RepairsPage({ route, data, saveRepairRecord, navigate, filters, setFilt
     const local = rowOverlay.get(id) || serverData.rows.find((row) => row.id === id);
     if (local) return normalizeRepairDraft(local);
     try {
-      const result = await apiGet(`/api/repairs/${encodeURIComponent(id)}`);
+      const result = await api.get(`/api/repairs/${encodeURIComponent(id)}`);
       return result.repair ? normalizeRepairDraft(result.repair) : null;
     } catch {
       return null;
@@ -2420,7 +2515,7 @@ function RepairsPage({ route, data, saveRepairRecord, navigate, filters, setFilt
     setItemsDialog({ open: true, loading: localRepair.itemsLoaded === false, repair: localRepair });
     if (localRepair.itemsLoaded !== false) return;
     try {
-      const result = await apiGet(`/api/repairs/${encodeURIComponent(repair.id)}`);
+      const result = await api.get(`/api/repairs/${encodeURIComponent(repair.id)}`);
       if (itemsDialogRequestRef.current !== requestId) return;
       setItemsDialog({ open: true, loading: false, repair: normalizeRepairDraft(result.repair || localRepair) });
     } catch (error) {
@@ -2635,6 +2730,7 @@ function RepairsPage({ route, data, saveRepairRecord, navigate, filters, setFilt
 }
 
 function QuickFindPage({ data, navigate, lang, t }) {
+  const api = usePortalApi();
   const [query, setQuery] = useState("");
   const [message, setMessage] = useState("");
   const [cameraActive, setCameraActive] = useState(false);
@@ -2649,7 +2745,7 @@ function QuickFindPage({ data, navigate, lang, t }) {
     const handle = setTimeout(() => {
       const params = new URLSearchParams({ pageSize: "8" });
       if (normalizedQuery) params.set("q", normalizedQuery);
-      apiGet(`/api/repairs/search?${params.toString()}`)
+      api.get(`/api/repairs/search?${params.toString()}`)
         .then((res) => { if (active) setMatches(res.rows || []); })
         .catch(() => { if (active) setMatches([]); });
     }, normalizedQuery ? 250 : 0);
@@ -2679,7 +2775,7 @@ function QuickFindPage({ data, navigate, lang, t }) {
     setQuery(value);
     let found = null;
     try {
-      const result = await apiGet(`/api/repairs/lookup?value=${encodeURIComponent(rawValue)}`);
+      const result = await api.get(`/api/repairs/lookup?value=${encodeURIComponent(rawValue)}`);
       found = result.repair || null;
     } catch {
       found = null;
@@ -2863,6 +2959,7 @@ function ScanSearchDialog({ open, onOpenChange, query, setQuery, message, setMes
 }
 
 function ClientsPage({ data, deleteClientRecord, filters, setFilters, setModal, toast, navigate, lang, t }) {
+  const api = usePortalApi();
   // 服务端搜索/筛选/排序/分页 + 每客户维修统计，不再依赖内存全量 clients/repairs。
   const [committedSearch, setCommittedSearch] = useState(filters.clientsSearch || "");
   useEffect(() => {
@@ -2880,7 +2977,7 @@ function ClientsPage({ data, deleteClientRecord, filters, setFilters, setModal, 
       page: String(filters.clientsPage || 1),
       pageSize: "20"
     });
-    apiGet(`/api/clients/search?${params.toString()}`)
+    api.get(`/api/clients/search?${params.toString()}`)
       .then((res) => { if (active) setServerClients({ rows: res.rows || [], total: res.total || 0, loading: false }); })
       .catch(() => { if (active) setServerClients({ rows: [], total: 0, loading: false }); });
     return () => { active = false; };
@@ -2926,15 +3023,15 @@ function ClientsPage({ data, deleteClientRecord, filters, setFilters, setModal, 
             return (
                 <TableRow key={client.id} className="row-click client-row" onClick={() => openClientOrders(client.id)}>
                   <TableCell data-label={t("clientName")}>
-                    <div className="client-name-cell"><TextLink className="client-name-link" href={`#/dashboard/clients/${encodeURIComponent(client.id)}`} onClick={(event) => event.stopPropagation()}>{client.name || "-"}</TextLink><ClientLevelBadge level={client.level} lang={lang} /></div>
+                    <div className="client-name-cell"><TextLink className="client-name-link" href={api.href(`/dashboard/clients/${encodeURIComponent(client.id)}`)} onClick={(event) => event.stopPropagation()}>{client.name || "-"}</TextLink><ClientLevelBadge level={client.level} lang={lang} /></div>
                   </TableCell>
                   <TableCell data-label={t("phone")} onClick={(event) => event.stopPropagation()}>{client.phone ? <TextLink className="table-link" href={`tel:${client.phone}`}>{client.phone}</TextLink> : "-"}</TableCell>
                   <TableCell data-label={t("repairRecords")}>
-                    <TextLink className="client-record-toggle" href={`#/dashboard/clients/${encodeURIComponent(client.id)}`} onClick={(event) => event.stopPropagation()}>
+                    <TextLink className="client-record-toggle" href={api.href(`/dashboard/clients/${encodeURIComponent(client.id)}`)} onClick={(event) => event.stopPropagation()}>
                       {stats.total} {t("times")}{stats.open ? ` · ${stats.open} ${t("unfinished")}` : ""}
                     </TextLink>
                   </TableCell>
-                  <TableCell data-label={t("latestRepair")}>{stats.latest ? <TextLink className="client-latest-order" href={`#/dashboard/repairs/${stats.latest.id}`} onClick={(event) => event.stopPropagation()}>{stats.latest.brand || ""} {stats.latest.model || ""} · {statusLabel(stats.latest.status, lang)}</TextLink> : "-"}</TableCell>
+                  <TableCell data-label={t("latestRepair")}>{stats.latest ? <TextLink className="client-latest-order" href={api.href(`/dashboard/repairs/${stats.latest.id}`)} onClick={(event) => event.stopPropagation()}>{stats.latest.brand || ""} {stats.latest.model || ""} · {statusLabel(stats.latest.status, lang)}</TextLink> : "-"}</TableCell>
                   <TableCell data-label={t("identity")}>{client.identity || "-"}</TableCell>
                   <TableCell data-label={t("email")}>{client.email || "-"}</TableCell>
                   <TableCell data-label={t("address")}>{client.address || "-"}</TableCell>
@@ -2952,6 +3049,7 @@ function ClientsPage({ data, deleteClientRecord, filters, setFilters, setModal, 
 }
 
 function ClientOrdersPage({ data, clientId, navigate, filters, setFilters, lang, t }) {
+  const api = usePortalApi();
   const startDate = filters.clientOrdersStartDate || "";
   const endDate = filters.clientOrdersEndDate || "";
   // 服务端分页 + 聚合：不再依赖内存全量 repairs/clients。
@@ -2964,8 +3062,8 @@ function ClientOrdersPage({ data, clientId, navigate, filters, setFilters, lang,
     if (endDate) params.set("end", endDate);
     const allParams = new URLSearchParams({ clientId, pageSize: "1" });
     Promise.all([
-      apiGet(`/api/repairs/search?${params.toString()}`),
-      (startDate || endDate) ? apiGet(`/api/repairs/search?${allParams.toString()}`) : Promise.resolve(null)
+      api.get(`/api/repairs/search?${params.toString()}`),
+      (startDate || endDate) ? api.get(`/api/repairs/search?${allParams.toString()}`) : Promise.resolve(null)
     ])
       .then(([res, allRes]) => {
         if (!active) return;
@@ -2980,7 +3078,7 @@ function ClientOrdersPage({ data, clientId, navigate, filters, setFilters, lang,
     const params = new URLSearchParams({ clientId });
     if (startDate) params.set("start", startDate);
     if (endDate) params.set("end", endDate);
-    apiGet(`/api/repairs/aggregates?${params.toString()}`)
+    api.get(`/api/repairs/aggregates?${params.toString()}`)
       .then((res) => { if (active) setServerTotals({ amount: res.totals?.amount || 0, cost: res.totals?.cost || 0, profit: res.totals?.profit || 0, businessCount: res.businessCount || 0, openCount: res.openCount || 0 }); })
       .catch(() => {});
     return () => { active = false; };
@@ -2994,7 +3092,7 @@ function ClientOrdersPage({ data, clientId, navigate, filters, setFilters, lang,
   const [clientInfo, setClientInfo] = useState(null);
   useEffect(() => {
     let active = true;
-    apiGet(`/api/clients/search?clientId=${encodeURIComponent(clientId)}&pageSize=1`)
+    api.get(`/api/clients/search?clientId=${encodeURIComponent(clientId)}&pageSize=1`)
       .then((res) => { if (active) setClientInfo(res.rows?.[0] || null); })
       .catch(() => { if (active) setClientInfo(null); });
     return () => { active = false; };
@@ -3074,7 +3172,7 @@ function CategoriesPage({ data, saveNonRepairResource, filters, setFilters, curr
   const brands = sortCatalogRows(data.brands).filter((brand) => brand.name.toLowerCase().includes(filters.brandsSearch.toLowerCase()));
   const current = data.brands.find((brand) => brand.id === currentBrandId) || brands[0] || data.brands[0];
   const models = current ? sortCatalogRows(data.models.filter((model) => model.brandId === current.id)) : [];
-  const saveCatalog = (updater) => saveNonRepairResource("catalog", updater);
+  const saveCatalog = (updater) => saveNonRepairResource("catalog", updater, { section: "brands-models" });
   const [draggingBrandId, setDraggingBrandId] = useState(null);
   const [draggingModelId, setDraggingModelId] = useState(null);
   const reorderBrands = (targetId) => {
@@ -3198,7 +3296,7 @@ function ProductsPage({ catalogTab, setCatalogTab, t, ...props }) {
   const addTopCategory = () => {
     const name = normalizeProductCategory(window.prompt(t("categoryName")));
     if (!name) return;
-    const saveCatalog = (updater) => props.saveNonRepairResource("catalog", updater);
+    const saveCatalog = (updater) => props.saveNonRepairResource("catalog", updater, { section: "products" });
     saveCatalog((state) => {
       const current = productTopCategories(state.settings);
       if (current.includes(name)) return state;
@@ -3225,8 +3323,9 @@ function ProductsPage({ catalogTab, setCatalogTab, t, ...props }) {
 function CatalogPage({ data, saveNonRepairResource, filters, setFilters, setModal, type, lang, session, t, embedded = false }) {
   const customTopCategory = productTopCategoryFromTab(type);
   const isService = type !== "parts";
+  const catalogSection = isService ? "services" : "parts";
   const collectionKey = isService ? "services" : "parts";
-  const saveCatalog = (updater) => saveNonRepairResource("catalog", updater);
+  const saveCatalog = (updater) => saveNonRepairResource("catalog", updater, { section: catalogSection });
   const canManage = isService ? canAccessPage(session, "services") : canAccessPage(session, "modules");
   const [draggingItemId, setDraggingItemId] = useState(null);
   if (!canManage) return <section className="page"><Empty>{t("noPermission")}</Empty></section>;
@@ -3381,7 +3480,7 @@ function StaffPage({ data, deleteStaffRecord, filters, setFilters, setModal, ses
   const remove = async (user) => {
     if (user.id === session?.id) return toast(t("currentUserCannotDelete"));
     if (user.isAdmin && data.users.filter((item) => item.isAdmin).length <= 1) return toast(t("lastAdminCannotDelete"));
-    if (!confirm(t("confirmDeleteStaff"))) return;
+    if (!confirm(t("confirmRemoveStaff"))) return;
     const ok = await deleteStaffRecord(user.id);
     if (ok) toast(t("saved"));
   };
@@ -3400,7 +3499,7 @@ function StaffPage({ data, deleteStaffRecord, filters, setFilters, setModal, ses
             <TableRow key={user.id}>
               <TableCell>{user.name}{user.isAdmin ? <Badge style={{ marginLeft: 8 }}>{t("admin")}</Badge> : null}</TableCell><TableCell>{user.username}</TableCell><TableCell>{user.email}</TableCell>
               <TableCell><Button size="sm" variant="outline" onClick={() => setModal({ type: "staff", id: user.id })}><Pencil {...ICON_SM} /> {t("edit")}</Button>{" "}
-                <Button size="sm" variant="danger" onClick={() => remove(user)}><Trash2 {...ICON_SM} /> {t("delete")}</Button></TableCell>
+                <Button size="sm" variant="danger" onClick={() => remove(user)}><Trash2 {...ICON_SM} /> {t("removeFromPortal")}</Button></TableCell>
             </TableRow>
           )) : <TableRow><TableCell colSpan={4}><Empty>{t("noData")}</Empty></TableCell></TableRow>}</TableBody>
         </Table>
@@ -3410,13 +3509,14 @@ function StaffPage({ data, deleteStaffRecord, filters, setFilters, setModal, ses
 }
 
 function TechniciansPage({ data, saveNonRepairResource, filters, setFilters, setModal, toast, navigate, lang, t }) {
+  const api = usePortalApi();
   const isMobileLayout = useMobileLayout();
   // 看板改服务端聚合（口径同旧 technicianDashboardRows），不再依赖内存全量 repairs。
   const [dashboard, setDashboard] = useState(null);
   const [refreshTick, setRefreshTick] = useState(0);
   useEffect(() => {
     let active = true;
-    apiGet("/api/technicians/dashboard")
+    api.get("/api/technicians/dashboard")
       .then((res) => { if (active) setDashboard(res.rows || []); })
       .catch(() => { if (active) setDashboard([]); });
     return () => { active = false; };
@@ -3439,7 +3539,7 @@ function TechniciansPage({ data, saveNonRepairResource, filters, setFilters, set
     if (!isDeletableHistoricalTechnicianRow(row, t)) return;
     if (!confirm(t("confirmDeleteHistoricalRecords"))) return;
     try {
-      await apiJson("/api/technicians/history", "DELETE", { key: row.id });
+      await api.json("/api/technicians/history", "DELETE", { key: row.id });
       setRefreshTick((tick) => tick + 1);
       toast(t("historicalRecordsDeleted"));
     } catch (error) {
@@ -3478,8 +3578,8 @@ function TechniciansPage({ data, saveNonRepairResource, filters, setFilters, set
           <TableBody>{page.items.length ? page.items.map((row) => (
             <TableRow key={row.id} className={`row-click ${row.isUnassigned ? "technician-row-unassigned" : ""}`} onClick={() => navigate(`/dashboard/technicians/${encodeURIComponent(row.id)}`)}>
               <TableCell><div className="technician-name-cell"><TechnicianColorDot technician={row.technician} /><b>{row.name}</b></div></TableCell>
-              <TableCell className="count-cell"><TextLink className="client-record-toggle" href={`#/dashboard/technicians/${encodeURIComponent(row.id)}`} onClick={(event) => event.stopPropagation()}>{row.recordCount} {t("times")}{row.openCount ? ` · ${row.openCount} ${t("unfinished")}` : ""}</TextLink></TableCell>
-              <TableCell className="technician-latest-cell">{row.latestRepair ? <TextLink className="client-latest-order" href={`#/dashboard/repairs/${row.latestRepair.id}`} onClick={(event) => event.stopPropagation()}>{row.latestRepair.brand || ""} {row.latestRepair.model || ""} · {statusLabel(row.latestRepair.status, lang)}</TextLink> : "-"}</TableCell>
+              <TableCell className="count-cell"><TextLink className="client-record-toggle" href={api.href(`/dashboard/technicians/${encodeURIComponent(row.id)}`)} onClick={(event) => event.stopPropagation()}>{row.recordCount} {t("times")}{row.openCount ? ` · ${row.openCount} ${t("unfinished")}` : ""}</TextLink></TableCell>
+              <TableCell className="technician-latest-cell">{row.latestRepair ? <TextLink className="client-latest-order" href={api.href(`/dashboard/repairs/${row.latestRepair.id}`)} onClick={(event) => event.stopPropagation()}>{row.latestRepair.brand || ""} {row.latestRepair.model || ""} · {statusLabel(row.latestRepair.status, lang)}</TextLink> : "-"}</TableCell>
               <TableCell className="count-cell">{row.repairCount}</TableCell>
               <TableCell className="count-cell">{row.warrantyCount}</TableCell>
               <TableCell className="count-cell">{row.openCount}</TableCell>
@@ -3496,6 +3596,7 @@ function TechniciansPage({ data, saveNonRepairResource, filters, setFilters, set
 }
 
 function TechnicianOrdersPage({ data, technicianKey, navigate, filters, setFilters, lang, t }) {
+  const api = usePortalApi();
   const isMobileLayout = useMobileLayout();
   const decodedKey = technicianKey || "";
   const technicians = data.technicians || [];
@@ -3515,8 +3616,8 @@ function TechnicianOrdersPage({ data, technicianKey, navigate, filters, setFilte
     if (endDate) params.set("end", endDate);
     const allParams = new URLSearchParams({ technicianKey: decodedKey, pageSize: "1" });
     Promise.all([
-      apiGet(`/api/repairs/search?${params.toString()}`),
-      (startDate || endDate) ? apiGet(`/api/repairs/search?${allParams.toString()}`) : Promise.resolve(null)
+      api.get(`/api/repairs/search?${params.toString()}`),
+      (startDate || endDate) ? api.get(`/api/repairs/search?${allParams.toString()}`) : Promise.resolve(null)
     ])
       .then(([res, allRes]) => {
         if (!active) return;
@@ -3531,7 +3632,7 @@ function TechnicianOrdersPage({ data, technicianKey, navigate, filters, setFilte
     const params = new URLSearchParams({ technicianKey: decodedKey });
     if (startDate) params.set("start", startDate);
     if (endDate) params.set("end", endDate);
-    apiGet(`/api/repairs/aggregates?${params.toString()}`)
+    api.get(`/api/repairs/aggregates?${params.toString()}`)
       .then((res) => { if (active) setServerTotals({ amount: res.totals?.amount || 0, cost: res.totals?.cost || 0, profit: res.totals?.profit || 0, businessCount: res.businessCount || 0, openCount: res.openCount || 0 }); })
       .catch(() => {});
     return () => { active = false; };
@@ -3639,6 +3740,7 @@ function TechnicianOrdersPage({ data, technicianKey, navigate, filters, setFilte
 }
 
 function ReportsPage({ data, filters, setFilters, navigate, lang, t }) {
+  const api = usePortalApi();
   const range = reportRange(filters.reportPreset, filters.reportStart, filters.reportEnd);
   const trendGranularity = filters.reportTrendGranularity || "day";
   const trendMetric = filters.reportTrendMetric || "both";
@@ -3647,7 +3749,7 @@ function ReportsPage({ data, filters, setFilters, navigate, lang, t }) {
   useEffect(() => {
     let active = true;
     const params = new URLSearchParams({ start: range.start || "", end: range.end || "", granularity: trendGranularity });
-    apiGet(`/api/reports/overview?${params.toString()}`)
+    api.get(`/api/reports/overview?${params.toString()}`)
       .then((res) => { if (active) setReport(res); })
       .catch(() => { if (active) setReport({ summary: {}, technicianRows: [], topModels: [], trendRows: [] }); });
     return () => { active = false; };
@@ -3771,6 +3873,7 @@ function ReportsPage({ data, filters, setFilters, navigate, lang, t }) {
 }
 
 function FinancePage({ data, filters, setFilters, navigate, lang, t }) {
+  const api = usePortalApi();
   const range = reportRange(filters.financePreset, filters.financeStart, filters.financeEnd);
   const search = (filters.financeSearch || "").trim().toLowerCase();
   // 防抖后的搜索词：避免每次按键都请求服务器。
@@ -3792,7 +3895,7 @@ function FinancePage({ data, filters, setFilters, navigate, lang, t }) {
       unpaidPage: String(filters.financeUnpaidPage || 1),
       pageSize: String(FINANCE_PAGE_SIZE)
     });
-    apiGet(`/api/reports/finance?${params.toString()}`)
+    api.get(`/api/reports/finance?${params.toString()}`)
       .then((res) => { if (active) setFinanceData(res); })
       .catch(() => { if (active) setFinanceData({ summary: {}, daily: {}, payments: { rows: [], total: 0, page: 1 }, unpaidOrders: { rows: [], total: 0, page: 1 } }); });
     return () => { active = false; };
@@ -3947,7 +4050,8 @@ function FinancePage({ data, filters, setFilters, navigate, lang, t }) {
   );
 }
 
-function SettingsPage({ data, saveSettingsOnly, toast, t }) {
+function SettingsPage({ data, saveSettingsOnly, toast, t, session, identity, onOpenSystem }) {
+  const canEditSettings = canAccessPage(session, "settings");
   const settingsKey = useMemo(() => stableStringify(data.settings || {}), [data.settings]);
   const [draftSettings, setDraftSettings] = useState(() => data.settings || {});
   const [saving, setSaving] = useState(false);
@@ -3967,7 +4071,18 @@ function SettingsPage({ data, saveSettingsOnly, toast, t }) {
   const settings = draftSettings || {};
   return (
     <section className="page">
-      <Card><CardHeader><CardTitle>{t("settings")}</CardTitle></CardHeader><CardContent>
+      {identity?.isSystemAdmin ? (
+        <Card className="portal-management-entry">
+          <CardHeader><CardTitle>{t("portalManagement")}</CardTitle></CardHeader>
+          <CardContent>
+            <div className="backup-summary">
+              <div><span>{t("portalManagementHint")}</span></div>
+              <div className="backup-actions"><Button type="button" onClick={() => onOpenSystem?.()}><Building2 {...ICON_SM} /> {t("openPortalManagement")}</Button></div>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+      {canEditSettings ? <Card><CardHeader><CardTitle>{t("settings")}</CardTitle></CardHeader><CardContent>
         <div className="settings-sections">
           <fieldset className="fieldset-card settings-fieldset">
             <legend>{t("businessInfo")}</legend>
@@ -4014,12 +4129,13 @@ function SettingsPage({ data, saveSettingsOnly, toast, t }) {
           </fieldset>
         </div>
         <div className="settings-actions"><Button onClick={saveSettings} disabled={saving}>{t("save")}</Button></div>
-      </CardContent></Card>
+      </CardContent></Card> : null}
     </section>
   );
 }
 
 function BackupPage({ data, bootstrap, toast, t }) {
+  const api = usePortalApi();
   const [text, setText] = useState("");
   const [backups, setBackups] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -4039,19 +4155,19 @@ function BackupPage({ data, bootstrap, toast, t }) {
   }, []);
 
   async function loadBackups() {
-    const payload = await apiGet("/api/backup/list");
+    const payload = await api.get("/api/backup/list");
     setBackups(payload.backups || []);
   }
 
   const exportData = async () => {
-    const payload = await apiGet("/api/backup/export");
+    const payload = await api.get("/api/backup/export");
     setText(JSON.stringify(payload, null, 2));
     toast(t("backupExported"));
   };
   const downloadCurrent = async () => {
     setBusy(true);
     try {
-      await downloadFromUrl("/api/backup/download/current", `repairnote-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.zip`);
+      await api.download("/api/backup/download/current", `repairnote-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.zip`);
       toast(t("backupDownloaded"));
     } finally {
       setBusy(false);
@@ -4060,7 +4176,7 @@ function BackupPage({ data, bootstrap, toast, t }) {
   const createBackup = async () => {
     setBusy(true);
     try {
-      await apiJson("/api/backup/create", "POST", {});
+      await api.json("/api/backup/create", "POST", {});
       await loadBackups();
       toast(t("backupCreated"));
     } finally {
@@ -4071,7 +4187,7 @@ function BackupPage({ data, bootstrap, toast, t }) {
     if (!window.confirm(t("confirmRestoreBackup"))) return;
     setBusy(true);
     try {
-      await apiJson("/api/backup/restore", "POST", { id });
+      await api.json("/api/backup/restore", "POST", { id, expectedRevision: data._revision });
       await bootstrap();
       await loadBackups();
       toast(t("backupRestored"));
@@ -4082,7 +4198,7 @@ function BackupPage({ data, bootstrap, toast, t }) {
   const downloadBackup = async (id) => {
     setBusy(true);
     try {
-      await downloadFromUrl(`/api/backup/download/${id}`, "repairnote-backup.zip");
+      await api.download(`/api/backup/download/${id}`, "repairnote-backup.zip");
       toast(t("backupDownloaded"));
     } finally {
       setBusy(false);
@@ -4096,7 +4212,15 @@ function BackupPage({ data, bootstrap, toast, t }) {
     try {
       const form = new FormData();
       form.append("file", file);
-      await apiFormData("/api/backup/import-file", "POST", form);
+      form.append("expectedRevision", data._revision || "");
+      try {
+        await api.formData("/api/backup/import-file", "POST", form);
+      } catch (error) {
+        // 升级前的旧格式备份：只允许默认门户在明确确认后导入
+        if (error?.code !== "LEGACY_BACKUP_CONFIRMATION_REQUIRED" || !window.confirm(error.message)) throw error;
+        form.append("confirmLegacy", "true");
+        await api.formData("/api/backup/import-file", "POST", form);
+      }
       await bootstrap();
       await loadBackups();
       toast(t("backupFileImported"));
@@ -4108,10 +4232,17 @@ function BackupPage({ data, bootstrap, toast, t }) {
   };
   const importData = async () => {
     if (!text.trim()) return toast(t("pasteJsonFirst"));
+    const dataRevision = data._revision;
     const parsed = safeParse(text, null);
-    const data = parsed?.data || parsed;
-    if (!data || !Array.isArray(data.clients) || !Array.isArray(data.repairs)) return toast(t("invalidBackup"));
-    await apiJson("/api/backup/import", "POST", parsed);
+    const payload = parsed?.data || parsed;
+    if (!payload || !Array.isArray(payload.clients) || !Array.isArray(payload.repairs)) return toast(t("invalidBackup"));
+    const body = { data: payload, sourcePortalId: payload.sourcePortalId ?? parsed?.sourcePortalId, expectedRevision: dataRevision };
+    try {
+      await api.json("/api/backup/import", "POST", body);
+    } catch (error) {
+      if (error?.code !== "LEGACY_BACKUP_CONFIRMATION_REQUIRED" || !window.confirm(error.message)) return toast(error.message || t("invalidBackup"));
+      await api.json("/api/backup/import", "POST", { ...body, confirmLegacy: true });
+    }
     await bootstrap();
     await loadBackups();
     toast(t("backupImported"));
@@ -4119,7 +4250,7 @@ function BackupPage({ data, bootstrap, toast, t }) {
   const importLocal = async () => {
     const local = localStorage.getItem(STORAGE_KEY);
     if (!local) return toast(t("noOldData"));
-    const result = await apiJson("/api/import/local-storage", "POST", safeParse(local, {}));
+    const result = await api.json("/api/import/local-storage", "POST", { data: safeParse(local, {}), expectedRevision: data._revision });
     await bootstrap();
     toast(t("importedRepairs", { count: result.counts.repairs }));
   };
@@ -4155,7 +4286,8 @@ function BackupPage({ data, bootstrap, toast, t }) {
       form.append("file", externalHistoryFile);
       form.append("amountStartDate", externalAmountStartDate);
       form.append("amountEndDate", externalAmountEndDate);
-      const result = await apiFormData("/api/import/external-history", "POST", form);
+      form.append("expectedRevision", data._revision || "");
+      const result = await api.formData("/api/import/external-history", "POST", form);
       const summary = result.summary || {};
       setExternalImportSummary(summary);
       clearExternalImportTimer();
@@ -4441,6 +4573,7 @@ function AttributeSelectionPanel({ value, onChange, items = [], lang = "zh", t }
 }
 
 function RepairForm({ data, session, saveRepairRecord, deleteRepairRecord, navigate, repairDraft, setRepairDraft, catalogTab, setCatalogTab, registerUnsavedGuard, registerRepairTopbar, repairId, route = "", toast, lang, t }) {
+  const api = usePortalApi();
   const detailPath = route.split("?")[0] || "";
   const isWarrantyRoute = detailPath.startsWith("/dashboard/warranties");
   const existingFromData = null; // 详情一律按 id 从服务端读取，不再依赖内存全量
@@ -4458,7 +4591,7 @@ function RepairForm({ data, session, saveRepairRecord, deleteRepairRecord, navig
     setRemoteRepair(null);
     setRemoteRepairMissing(false);
     setRemoteRepairLoading(true);
-    apiGet(`/api/repairs/${encodeURIComponent(repairId)}`)
+    api.get(`/api/repairs/${encodeURIComponent(repairId)}`)
       .then((res) => {
         if (!active) return;
         setRemoteRepair(res.repair ? normalizeRepairDraftFromRecord(res.repair) : null);
@@ -4526,7 +4659,7 @@ function RepairForm({ data, session, saveRepairRecord, deleteRepairRecord, navig
     if (!repairId || !existing || existing.itemsLoaded || (currentDraft?.id === repairId && currentDraft.itemsLoaded)) return undefined;
     setRemoteRepairLoading(true);
     setRemoteRepairMissing(false);
-    apiGet(`/api/repairs/${encodeURIComponent(repairId)}`)
+    api.get(`/api/repairs/${encodeURIComponent(repairId)}`)
       .then((payload) => {
         if (cancelled || !payload?.repair) return;
         const fullDraft = normalizeRepairDraftFromRecord(payload.repair);
@@ -4649,7 +4782,7 @@ function RepairForm({ data, session, saveRepairRecord, deleteRepairRecord, navig
     let active = true;
     const handle = setTimeout(() => {
       const params = new URLSearchParams({ q: normalizedClientSearch, pageSize: "8", sort: "latest" });
-      apiGet(`/api/clients/search?${params.toString()}`)
+      api.get(`/api/clients/search?${params.toString()}`)
         .then((res) => { if (active) setClientSearchResult({ rows: res.rows || [] }); })
         .catch(() => { if (active) setClientSearchResult({ rows: [] }); });
     }, 200);
@@ -4665,7 +4798,7 @@ function RepairForm({ data, session, saveRepairRecord, deleteRepairRecord, navig
       return undefined;
     }
     let active = true;
-    apiGet(`/api/repairs/search?clientId=${encodeURIComponent(selectedClient.id)}&pageSize=1`)
+    api.get(`/api/repairs/search?clientId=${encodeURIComponent(selectedClient.id)}&pageSize=1`)
       .then((res) => {
         if (!active) return;
         const minusCurrent = existing && existing.clientId === selectedClient.id ? 1 : 0;
@@ -4769,7 +4902,7 @@ function RepairForm({ data, session, saveRepairRecord, deleteRepairRecord, navig
       return toast(t("requiredRepairFields"));
     }
     // 客户去重改为查服务端：手输姓名+电话若已有同名同号客户则复用，避免重复建档。
-    const resolved = await resolveRepairClientForSaveRemote(workingDraft);
+    const resolved = await resolveRepairClientForSaveRemote(api, workingDraft);
     if (resolved.failed) return toast(t("saveFailed"));
     const { clientId, clientToCreate } = resolved;
     const payload = { ...workingDraft, clientId, publicToken: workingDraft.publicToken || publicToken };
@@ -4825,7 +4958,7 @@ function RepairForm({ data, session, saveRepairRecord, deleteRepairRecord, navig
       return undefined;
     }
     let active = true;
-    apiGet(`/api/repairs/${encodeURIComponent(sourceId)}`)
+    api.get(`/api/repairs/${encodeURIComponent(sourceId)}`)
       .then((res) => { if (active) setSourceRepair(res.repair || null); })
       .catch(() => { if (active) setSourceRepair(null); });
     return () => { active = false; };
@@ -6142,7 +6275,7 @@ function ModalForm({ modal, data, saveClientRecord, saveStaffRecord, saveNonRepa
         return;
       }
       if (type === "client" && saveClientRecord) {
-        const ok = await saveClientRecord({ id: modal.id || "", name: formatClientName(form.name).trim(), level: normalizeClientLevel(form.level), docType: form.docType || "DNI", identity: form.identity || "", email: form.email || "", phone: form.phone?.trim() || "", address: form.address || "", comment: form.comment || "" });
+        const ok = await saveClientRecord({ id: modal.id || "", updatedAt: modal.id ? (current?.updatedAt || form.updatedAt || "") : undefined, name: formatClientName(form.name).trim(), level: normalizeClientLevel(form.level), docType: form.docType || "DNI", identity: form.identity || "", email: form.email || "", phone: form.phone?.trim() || "", address: form.address || "", comment: form.comment || "" });
         if (!ok) return;
         close();
         toast(modal.id ? t("saved") : t("created"));
@@ -6150,6 +6283,7 @@ function ModalForm({ modal, data, saveClientRecord, saveStaffRecord, saveNonRepa
       }
 
       const resource = modalResource(type);
+      const section = modal.section || (type === "brand" || type === "model" ? "brands-models" : type === "service" ? "services" : type === "part" ? "parts" : undefined);
       const updater = (state) => {
         if (type === "client") {
           const name = formatClientName(form.name).trim();
@@ -6165,7 +6299,7 @@ function ModalForm({ modal, data, saveClientRecord, saveStaffRecord, saveNonRepa
         if (type === "technician") return upsert(state, "technicians", modal.id, { id: modal.id || id(), name: form.name?.trim() || "", phone: form.phone || "", email: form.email || "", color: normalizeTechnicianColor(form.color), active: form.active !== false, sortOrder: form.sortOrder });
         return state;
       };
-      const ok = resource ? await saveNonRepairResource(resource, updater) : false;
+      const ok = resource ? await saveNonRepairResource(resource, updater, { section }) : false;
       if (!ok) return;
       close();
       toast(modal.id ? t("saved") : t("created"));
@@ -6857,14 +6991,14 @@ function resolveRepairClientForSave(workingDraft, clients = []) {
 }
 
 // 服务端版客户解析：clientId 已选直接用；否则按「姓名(不分大小写)+电话精确」查服务端去重。
-async function resolveRepairClientForSaveRemote(workingDraft) {
+async function resolveRepairClientForSaveRemote(api, workingDraft) {
   if (workingDraft.clientId) return { clientId: workingDraft.clientId, clientToCreate: null };
   const clientName = formatClientName(workingDraft.clientName || "").trim();
   const clientPhone = (workingDraft.phone || "").trim();
   if (!clientName || !clientPhone) return { clientId: "", clientToCreate: null };
   let existingClient = null;
   try {
-    const result = await apiGet(`/api/clients/search?phone=${encodeURIComponent(clientPhone)}&pageSize=100`);
+    const result = await api.get(`/api/clients/search?phone=${encodeURIComponent(clientPhone)}&pageSize=100`);
     existingClient = (result.rows || []).find((client) => String(client.name || "").toLowerCase() === clientName.toLowerCase() && client.phone === clientPhone) || null;
   } catch {
     return { failed: true };
@@ -6931,18 +7065,29 @@ function modalResource(type) {
   return "";
 }
 
-function nonRepairResourcePayload(resource, data) {
+// 写入协议：整组保存必须携带 expectedRevision；目录按分区只提交允许的数组 / 设置键（服务端拒绝其他键）。
+const CATALOG_SECTION_PAYLOAD = {
+  "brands-models": { arrays: ["brands", "models"], settingKeys: [] },
+  services: { arrays: ["services"], settingKeys: ["productServiceCategories"] },
+  parts: { arrays: ["parts"], settingKeys: ["productPartCategories"] },
+  products: { arrays: ["services", "parts"], settingKeys: ["productCatalogCategories", "productServiceCategories", "productPartCategories"] }
+};
+
+function nonRepairResourcePayload(resource, data, section, expectedRevision) {
   if (resource === "catalog") {
-    return {
-      brands: data.brands || [],
-      models: data.models || [],
-      services: data.services || [],
-      parts: data.parts || [],
-      settings: data.settings || {}
-    };
+    const sectionName = CATALOG_SECTION_PAYLOAD[section] ? section : "products";
+    const spec = CATALOG_SECTION_PAYLOAD[sectionName];
+    const payload = { section: sectionName, expectedRevision };
+    for (const key of spec.arrays) payload[key] = data[key] || [];
+    const settings = {};
+    for (const key of spec.settingKeys) {
+      if (data.settings?.[key] !== undefined) settings[key] = data.settings[key];
+    }
+    if (Object.keys(settings).length) payload.settings = settings;
+    return payload;
   }
-  if (resource === "technicians") return data.technicians || [];
-  if (resource === "attributes") return data.attributes || [];
+  if (resource === "technicians") return { technicians: data.technicians || [], expectedRevision };
+  if (resource === "attributes") return { attributes: data.attributes || [], expectedRevision };
   return {};
 }
 
@@ -7007,52 +7152,7 @@ function applyRevisionPatch(revision, patch = {}) {
   return parts.join("|");
 }
 
-async function apiGet(url) {
-  const response = await fetch(url);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || "请求失败");
-  return data;
-}
-
-async function apiJson(url, method, body) {
-  const response = await fetch(url, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || "请求失败");
-  return data;
-}
-
-async function apiFormData(url, method, body) {
-  const response = await fetch(url, { method, body });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || "请求失败");
-  return data;
-}
-
-async function downloadFromUrl(url, filename) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error(data.error || "下载失败");
-  }
-  const blob = await response.blob();
-  const objectUrl = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = objectUrl;
-  link.download = downloadFileName(response.headers.get("content-disposition")) || filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(objectUrl);
-}
-
-function downloadFileName(contentDisposition) {
-  const match = contentDisposition?.match(/filename="([^"]+)"/i) || contentDisposition?.match(/filename=([^;]+)/i);
-  return match?.[1]?.trim() || "";
-}
+// 业务请求统一经 usePortalApi()（绑定不可变 portalId 的实例），不再有模块级 fetch 封装。
 
 function formatBackupDate(value) {
   const date = new Date(value);
@@ -8043,4 +8143,405 @@ function code39Svg(value) {
 
 function escapeHtml(value) {
   return String(value || "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+}
+
+// ---------------------------------------------------------------------------
+// 外层身份壳：登录 → 门户列表 → 0/1/多门户分流；/#/p/<portalId>/... 工作区；/#/settings/portals 全局门户管理。
+// 工作区以 staff.id + ":" + portalId 为 key，切换时销毁旧状态；每个工作区持有绑定不可变 portalId 的 API 实例。
+// ---------------------------------------------------------------------------
+const UI_LANG_STORAGE_KEY = "repairnote-ui-lang";
+
+function readUiLang() {
+  try {
+    const stored = window.localStorage.getItem(UI_LANG_STORAGE_KEY);
+    return stored === "es" ? "es" : "zh";
+  } catch {
+    return "zh";
+  }
+}
+
+function writeUiLang(lang) {
+  try {
+    window.localStorage.setItem(UI_LANG_STORAGE_KEY, lang === "es" ? "es" : "zh");
+  } catch {
+    // 浏览器存储不可用时忽略
+  }
+}
+
+export default function AppPage() {
+  const [mounted, setMounted] = useState(false);
+  const [identity, setIdentity] = useState(null);
+  const [identityLoaded, setIdentityLoaded] = useState(false);
+  const [identityError, setIdentityError] = useState("");
+  const [portals, setPortals] = useState([]);
+  const [portalsLoaded, setPortalsLoaded] = useState(false);
+  const [portalsError, setPortalsError] = useState("");
+  const [hashState, setHashState] = useState(() => ({ raw: "", parsed: { kind: "login", portalId: null, logicalRoute: null } }));
+  const [theme, setTheme] = useState("light");
+  const [uiLang, setUiLang] = useState("zh");
+  const [notice, setNotice] = useState("");
+  const [workspaceVersion, setWorkspaceVersion] = useState(0);
+  const leaveGuardRef = useRef(null);
+  const restoringHashRef = useRef(false);
+  const pendingDeepLinkRef = useRef("");
+  const portalsRef = useRef([]);
+  const apiRef = useRef(null);
+  const t = useMemo(() => makeT(uiLang), [uiLang]);
+
+  useEffect(() => {
+    portalsRef.current = portals;
+  }, [portals]);
+
+  const changeTheme = useCallback((nextTheme) => {
+    const normalized = nextTheme === "dark" ? "dark" : "light";
+    setTheme(normalized);
+    applyThemePreference(normalized);
+  }, []);
+
+  const changeUiLang = useCallback((lang) => {
+    const normalized = lang === "es" ? "es" : "zh";
+    setUiLang(normalized);
+    writeUiLang(normalized);
+  }, []);
+
+  const showNotice = useCallback((message) => {
+    setNotice(message);
+    window.setTimeout(() => setNotice(""), 2400);
+  }, []);
+
+  const readHash = useCallback(() => {
+    const raw = window.location.hash || "";
+    return { raw, parsed: parsePortalHash(raw) };
+  }, []);
+
+  const setHash = useCallback((hash) => {
+    if (window.location.hash === hash) {
+      setHashState(readHash());
+      return;
+    }
+    // 程序内导航：先记录目标，hashchange 事件里不再重复做离开确认
+    restoringHashRef.current = true;
+    window.location.hash = hash;
+    setHashState({ raw: hash, parsed: parsePortalHash(hash) });
+  }, [readHash]);
+
+  const registerLeaveGuard = useCallback((guard) => {
+    leaveGuardRef.current = guard;
+    return () => {
+      if (leaveGuardRef.current === guard) leaveGuardRef.current = null;
+    };
+  }, []);
+
+  // 离开当前视图（工作区 / 管理页）前：写队列未结束则阻止；有未保存内容则确认。
+  const canLeaveCurrentView = useCallback(() => {
+    const guard = leaveGuardRef.current;
+    if (!guard) return true;
+    if (guard.isSaving?.()) {
+      showNotice(t("savingWait"));
+      return false;
+    }
+    if (guard.isDirty?.() && !window.confirm(t("unsavedChangesConfirm"))) return false;
+    leaveGuardRef.current = null;
+    return true;
+  }, [showNotice, t]);
+
+  const loadPortals = useCallback(async () => {
+    setPortalsError("");
+    try {
+      const result = await identityRequest("/api/portals");
+      const list = Array.isArray(result.portals) ? result.portals : [];
+      setPortals(list);
+      portalsRef.current = list;
+      setPortalsLoaded(true);
+      return list;
+    } catch (error) {
+      if (error?.status === 401) {
+        setIdentity(null);
+        setPortals([]);
+        setPortalsLoaded(false);
+        return null;
+      }
+      setPortalsError(error?.message || t("loadFailedRetry"));
+      setPortalsLoaded(true);
+      return null;
+    }
+  }, [t]);
+
+  const loadIdentity = useCallback(async () => {
+    setIdentityError("");
+    try {
+      const me = await identityRequest("/api/auth/me");
+      const user = me.user || null;
+      setIdentity(user);
+      setIdentityLoaded(true);
+      if (user) await loadPortals();
+      else {
+        setPortals([]);
+        setPortalsLoaded(false);
+      }
+      return user;
+    } catch (error) {
+      // 临时错误：不当作登出，提供重试
+      setIdentityError(error?.message || t("loadFailedRetry"));
+      setIdentityLoaded(true);
+      return null;
+    }
+  }, [loadPortals, t]);
+
+  // 首次挂载：主题、语言、身份、门户列表；记住合法的深链接以便登录后恢复。
+  useEffect(() => {
+    const initialTheme = readThemePreference();
+    setTheme(initialTheme);
+    applyThemePreference(initialTheme);
+    setUiLang(readUiLang());
+    const initial = readHash();
+    setHashState(initial);
+    if (["workspace", "system", "legacy"].includes(initial.parsed.kind)) pendingDeepLinkRef.current = initial.raw;
+    setMounted(true);
+    loadIdentity();
+    const onHash = () => {
+      const next = readHash();
+      if (restoringHashRef.current) {
+        restoringHashRef.current = false;
+        setHashState(next);
+        return;
+      }
+      setHashState((current) => {
+        // 工作区内打开旧 #/dashboard/... 链接：直接映射到当前门户的同一路由，不算离开工作区
+        if (current.parsed.kind === "workspace" && next.parsed.kind === "legacy") {
+          const rewritten = buildPortalHash(current.parsed.portalId, next.parsed.logicalRoute);
+          restoringHashRef.current = true;
+          window.location.hash = rewritten;
+          return { raw: rewritten, parsed: parsePortalHash(rewritten) };
+        }
+        const leavingView = current.parsed.kind === "workspace" || current.parsed.kind === "system";
+        const sameWorkspace = current.parsed.kind === "workspace" && next.parsed.kind === "workspace" && next.parsed.portalId === current.parsed.portalId;
+        if (leavingView && !sameWorkspace && !canLeaveCurrentView()) {
+          restoringHashRef.current = true;
+          window.location.hash = current.raw;
+          return current;
+        }
+        return next;
+      });
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  const goTo = useCallback((hash, { force = false } = {}) => {
+    if (!force && !canLeaveCurrentView()) return false;
+    setHash(hash);
+    return true;
+  }, [canLeaveCurrentView, setHash]);
+
+  const logout = useCallback(async ({ silent = false } = {}) => {
+    if (!silent && !canLeaveCurrentView()) return;
+    leaveGuardRef.current = null;
+    try {
+      await identityRequest("/api/auth/logout", "POST", {});
+    } catch {
+      // 会话可能已失效，继续清理本地状态
+    }
+    apiRef.current?.dispose();
+    apiRef.current = null;
+    setIdentity(null);
+    setPortals([]);
+    setPortalsLoaded(false);
+    pendingDeepLinkRef.current = "";
+    setHash(`#${LOGIN_ROUTE}`);
+  }, [canLeaveCurrentView, setHash]);
+
+  const onUnauthorized = useCallback(() => {
+    // 仅 401 才清空身份与工作区
+    apiRef.current?.dispose();
+    apiRef.current = null;
+    leaveGuardRef.current = null;
+    setIdentity(null);
+    setPortals([]);
+    setPortalsLoaded(false);
+    setHash(`#${LOGIN_ROUTE}`);
+  }, [setHash]);
+
+  const onPortalLost = useCallback(() => {
+    // 门户停用 / 成员被移出：清该工作区，回门户选择；不影响身份
+    apiRef.current?.dispose();
+    apiRef.current = null;
+    leaveGuardRef.current = null;
+    setWorkspaceVersion((value) => value + 1);
+    showNotice(t("portalLost"));
+    loadPortals();
+    setHash(`#${PICKER_ROUTE}`);
+  }, [loadPortals, setHash, showNotice, t]);
+
+  const onSystemRoleLost = useCallback(() => {
+    leaveGuardRef.current = null;
+    loadIdentity();
+    setHash(`#${PICKER_ROUTE}`);
+  }, [loadIdentity, setHash]);
+
+  // 0 / 1 / 多门户分流（系统主管理员没有有效门户时进入管理页）。
+  const routeAfterIdentity = useCallback((list, user, preferredHash = "") => {
+    const preferred = preferredHash ? parsePortalHash(preferredHash) : null;
+    if (preferred?.kind === "system" && user?.isSystemAdmin) return `#${SYSTEM_ROUTE}`;
+    if (preferred?.kind === "workspace" && list.some((portal) => portal.id === preferred.portalId)) return preferredHash;
+    if (preferred?.kind === "legacy") {
+      if (list.length === 1) return buildPortalHash(list[0].id, preferred.logicalRoute);
+      return `#${PICKER_ROUTE}`;
+    }
+    if (!list.length) return user?.isSystemAdmin ? `#${SYSTEM_ROUTE}` : `#${PICKER_ROUTE}`;
+    if (list.length === 1) return buildPortalHash(list[0].id, "/dashboard/repairs");
+    return `#${PICKER_ROUTE}`;
+  }, []);
+
+  // 身份 / 门户列表就绪后，把当前 hash 校正到合法视图。
+  useEffect(() => {
+    if (!mounted || !identityLoaded) return;
+    const { parsed, raw } = hashState;
+    if (!identity) {
+      if (parsed.kind !== "login") {
+        if (["workspace", "system", "legacy"].includes(parsed.kind)) pendingDeepLinkRef.current = raw;
+        setHash(`#${LOGIN_ROUTE}`);
+      }
+      return;
+    }
+    if (!portalsLoaded) return;
+    if (parsed.kind === "login" || parsed.kind === "invalid" || parsed.kind === "legacy") {
+      const preferred = pendingDeepLinkRef.current || (parsed.kind === "legacy" ? raw : "");
+      pendingDeepLinkRef.current = "";
+      setHash(routeAfterIdentity(portals, identity, preferred));
+      return;
+    }
+    if (parsed.kind === "workspace" && !portals.some((portal) => portal.id === parsed.portalId)) {
+      showNotice(t("portalLost"));
+      setHash(`#${PICKER_ROUTE}`);
+      return;
+    }
+    if (parsed.kind === "system" && !identity.isSystemAdmin) {
+      setHash(routeAfterIdentity(portals, identity, ""));
+    }
+  }, [mounted, identityLoaded, identity, portalsLoaded, portals, hashState, routeAfterIdentity, setHash, showNotice, t]);
+
+  const parsed = hashState.parsed;
+  const currentPortal = identity && parsed.kind === "workspace" ? portals.find((portal) => portal.id === parsed.portalId) || null : null;
+  const workspaceKey = identity && currentPortal ? `${identity.id}:${currentPortal.id}:${workspaceVersion}` : "";
+  const currentPortalId = currentPortal?.id || "";
+
+  // 每个工作区实例一个不可变门户的 API 客户端；切换 / 卸载时作废迟到响应。
+  const api = useMemo(() => {
+    apiRef.current?.dispose();
+    apiRef.current = null;
+    if (!workspaceKey) return null;
+    const instance = createPortalApi(currentPortalId, { onUnauthorized, onPortalLost });
+    apiRef.current = instance;
+    return instance;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceKey]);
+
+  useEffect(() => () => apiRef.current?.dispose(), []);
+
+  if (!mounted || !identityLoaded) return null;
+
+  if (!identity) {
+    if (identityError) {
+      return (
+        <main className="login-page">
+          <Card className="login-card"><CardContent>
+            <div className="portal-picker-error"><span>{identityError}</span><Button variant="outline" size="sm" type="button" onClick={loadIdentity}><RefreshCw {...ICON_SM} /> {t("retry")}</Button></div>
+          </CardContent></Card>
+        </main>
+      );
+    }
+    return <Login theme={theme} onThemeChange={changeTheme} onLogin={async (username, password) => {
+      const result = await identityRequest("/api/auth/login", "POST", { username, password });
+      const user = result.user;
+      setIdentity(user);
+      setIdentityLoaded(true);
+      const list = (await loadPortals()) || [];
+      const preferred = pendingDeepLinkRef.current;
+      pendingDeepLinkRef.current = "";
+      setHash(routeAfterIdentity(list, user, preferred));
+    }} />;
+  }
+
+  if (parsed.kind === "system") {
+    if (!identity.isSystemAdmin) {
+      return (
+        <main className="login-page">
+          <Card className="login-card"><CardContent>
+            <Empty compact>{t("noPermission")}</Empty>
+            <div className="portal-picker-actions"><Button variant="outline" type="button" onClick={() => setHash(routeAfterIdentity(portals, identity, ""))}>{t("switchPortal")}</Button></div>
+          </CardContent></Card>
+        </main>
+      );
+    }
+    return (
+      <>
+        <PortalManagementPage
+          key={`system:${identity.id}`}
+          identity={identity}
+          lang={uiLang}
+          onBack={() => {
+            if (!canLeaveCurrentView()) return;
+            loadPortals().then((list) => {
+              const next = list || portalsRef.current;
+              if (next.length === 1) setHash(buildPortalHash(next[0].id, "/dashboard/settings"));
+              else setHash(`#${PICKER_ROUTE}`);
+            });
+          }}
+          backLabel={portals.length === 1 ? t("settings") : undefined}
+          onLogout={() => logout()}
+          onUnauthorized={onUnauthorized}
+          onSystemRoleLost={onSystemRoleLost}
+          registerLeaveGuard={registerLeaveGuard}
+        />
+        {notice ? <div className="toast">{notice}</div> : null}
+      </>
+    );
+  }
+
+  if (parsed.kind === "workspace" && currentPortal && api) {
+    return (
+      <PortalApiContext.Provider value={api}>
+        <Workspace
+          key={workspaceKey}
+          identity={identity}
+          portal={currentPortal}
+          api={api}
+          initialRoute={parsed.logicalRoute}
+          portalCount={portals.length}
+          theme={theme}
+          changeTheme={changeTheme}
+          registerLeaveGuard={registerLeaveGuard}
+          onLogout={logout}
+          onSwitchPortal={() => {
+            if (!canLeaveCurrentView()) return;
+            loadPortals();
+            setHash(`#${PICKER_ROUTE}`);
+          }}
+          onOpenSystem={() => goTo(`#${SYSTEM_ROUTE}`)}
+          onPortalLost={onPortalLost}
+        />
+        {notice ? <div className="toast">{notice}</div> : null}
+      </PortalApiContext.Provider>
+    );
+  }
+
+  return (
+    <>
+      <PortalPicker
+        identity={identity}
+        portals={portals}
+        loading={!portalsLoaded && !portalsError}
+        error={portalsError}
+        onRetry={loadPortals}
+        onSelect={(portal) => setHash(buildPortalHash(portal.id, "/dashboard/repairs"))}
+        onOpenSystem={() => setHash(`#${SYSTEM_ROUTE}`)}
+        onLogout={() => logout()}
+        lang={uiLang}
+        onLangChange={changeUiLang}
+        languages={languages}
+      />
+      {notice ? <div className="toast">{notice}</div> : null}
+    </>
+  );
 }

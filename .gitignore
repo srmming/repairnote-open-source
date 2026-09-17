@@ -14,6 +14,7 @@ outputs/
 tmp/
 repairnote-promo-20s/.thumbnails/
 *.png
+!reports/screenshots/*.png
 *.sql
 !prisma/migrations/**/*.sql
 *.dump

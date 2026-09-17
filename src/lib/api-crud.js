@@ -1,97 +1,74 @@
-import { hashPassword, requireAnyPageAccess, requirePageAccess } from "@/lib/auth";
-import { getBootstrapData, syncAttributesData, syncCatalogData, syncFromClientData, syncTechniciansData } from "@/lib/data-store";
-import { validateBusinessDataShape } from "@/lib/data-validation";
+import { errorResponse, methodNotAllowed, readJsonBody, requestIdOf } from "@/lib/api-errors";
+import { assertNoPortalOverride, portalJson, requirePortalContext } from "@/lib/portal-context";
+import { CATALOG_SECTIONS, getBootstrapData, syncAttributesData, syncCatalogData, syncTechniciansData } from "@/lib/data-store";
 
-const resourceMap = {
-  clients: "clients",
-  catalog: null,
-  attributes: "attributes",
-  staff: "users",
-  technicians: "technicians",
-  settings: "settings",
-  repairs: "repairs"
+// 小资源集合路由：只读取当前门户对应的资源（不再走全量 bootstrap），写入按资源 / 分区授权并携带 expectedRevision。
+const readAccess = {
+  catalog: { anyOf: ["categories", "modules", "services"] },
+  attributes: { anyOf: ["attributes"] },
+  technicians: { anyOf: ["technicians"] }
 };
 
-const resourcePermissions = {
-  clients: ["clients"],
-  catalog: ["categories", "modules", "services"],
-  attributes: ["attributes"],
-  technicians: ["technicians"],
-  settings: ["settings"],
-  repairs: ["repairs", "warranties"]
+const writeAccess = {
+  attributes: { anyOf: ["attributes"] },
+  technicians: { anyOf: ["technicians"] }
 };
 
 export function collectionRoute(resource) {
   return {
-    async GET() {
+    async GET(request) {
+      const requestId = requestIdOf(request);
       try {
-        const staff = await requireResourceAccess(resource, "read");
-        const data = await getBootstrapData();
-        if (resource === "staff" && !staff.isAdmin) return Response.json({ error: "只有管理员可查看员工" }, { status: 403 });
-        if (resource === "catalog") return Response.json({ brands: data.brands, models: data.models, services: data.services, parts: data.parts });
-        return Response.json(data[resourceMap[resource]]);
+        const access = readAccess[resource];
+        if (!access) throw methodNotAllowed();
+        const ctx = await requirePortalContext(request, access);
+        const data = await getBootstrapData(ctx, { includeUsers: false });
+        if (resource === "catalog") return portalJson(ctx, { brands: data.brands, models: data.models, services: data.services, parts: data.parts, settings: pickCatalogSettings(data.settings), _revision: data._revision });
+        return portalJson(ctx, { [resource]: data[resource], _revision: data._revision });
       } catch (error) {
-        return errorResponse(error);
+        return errorResponse(error, { requestId });
       }
     },
     async POST(request) {
+      const requestId = requestIdOf(request);
       try {
-        const staff = await requireResourceAccess(resource, "write");
-        const body = await request.json();
-        if (resource === "staff" && !staff.isAdmin) return Response.json({ error: "只有管理员可管理员工" }, { status: 403 });
-        if (resource === "repairs") return Response.json({ error: "请使用单张维修单接口保存" }, { status: 405 });
-        if (resource === "technicians") return Response.json(await syncTechniciansData(body));
-        if (resource === "catalog") return Response.json(await syncCatalogData(body));
-        if (resource === "attributes") return Response.json(await syncAttributesData(body));
-        const data = await getBootstrapData();
-        const next = applyBody(data, resource, body);
-        return Response.json(await syncFromClientData(validateBusinessDataShape(next, "保存数据")));
+        if (resource === "catalog") return await saveCatalog(request);
+        const access = writeAccess[resource];
+        if (!access) throw methodNotAllowed();
+        const ctx = await requirePortalContext(request, access);
+        const body = await readJsonBody(request);
+        assertNoPortalOverride(ctx, body);
+        const rows = body[resource];
+        if (resource === "technicians") return portalJson(ctx, await syncTechniciansData(ctx, rows, { expectedRevision: body.expectedRevision }));
+        if (resource === "attributes") return portalJson(ctx, await syncAttributesData(ctx, rows, { expectedRevision: body.expectedRevision }));
+        throw methodNotAllowed();
       } catch (error) {
-        return errorResponse(error);
+        return errorResponse(error, { requestId });
       }
     }
   };
 }
 
-async function requireResourceAccess(resource, action) {
-  if (resource === "staff") {
-    const staff = await requirePageAccess("settings");
-    if (!staff.isAdmin) {
-      const error = new Error(action === "read" ? "只有管理员可查看员工" : "只有管理员可管理员工");
-      error.status = 403;
-      throw error;
+function pickCatalogSettings(settings = {}) {
+  return Object.fromEntries(["productCatalogCategories", "productServiceCategories", "productPartCategories"].filter((key) => settings[key] !== undefined).map((key) => [key, settings[key]]));
+}
+
+// 目录写入协议：{ section, brands?, models?, services?, parts?, settings?, expectedRevision }；section 决定权限与允许修改的内容。
+async function saveCatalog(request) {
+  const requestId = requestIdOf(request);
+  try {
+    const body = await readJsonBody(request);
+    const section = CATALOG_SECTIONS[body.section];
+    if (!section) {
+      // 先验会话，再报 section 错误，避免未登录探测
+      await requirePortalContext(request, { member: true });
+      return errorResponse({ status: 400, code: "INVALID_SECTION", message: "未知的目录分区（section）" }, { requestId });
     }
-    return staff;
+    const ctx = await requirePortalContext(request, section.permissions.length > 1 ? { allOf: section.permissions } : { anyOf: section.permissions });
+    assertNoPortalOverride(ctx, body);
+    const { section: sectionName, expectedRevision, ...payload } = body;
+    return portalJson(ctx, await syncCatalogData(ctx, payload, { section: sectionName, expectedRevision }));
+  } catch (error) {
+    return errorResponse(error, { requestId });
   }
-  const keys = resourcePermissions[resource] || [];
-  return keys.length === 1 ? requirePageAccess(keys[0]) : requireAnyPageAccess(keys);
-}
-
-function applyBody(data, resource, body) {
-  if (resource === "catalog") return { ...data, ...body };
-  if (resource === "settings") return { ...data, settings: body };
-  if (resource === "staff") {
-    const payload = { ...body, isAdmin: Boolean(body.isAdmin) };
-    payload.pagePermissions = Array.isArray(body.pagePermissions) ? body.pagePermissions : [];
-    if (body.password) payload.passwordHash = hashPassword(body.password);
-    delete payload.password;
-    const users = payload.id ? data.users.map((item) => item.id === payload.id ? { ...item, ...payload } : item) : [{ ...payload, id: cryptoId() }, ...data.users];
-    return { ...data, users };
-  }
-  const key = resourceMap[resource];
-  const rows = Array.isArray(body) ? body : body.id ? data[key].map((item) => item.id === body.id ? { ...item, ...body } : item) : [{ ...body, id: cryptoId() }, ...data[key]];
-  return { ...data, [key]: rows };
-}
-
-function cryptoId() {
-  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
-}
-
-function errorResponse(error) {
-  if (error?.status === 401) return Response.json({ error: "请先登录" }, { status: 401 });
-  if (error?.status === 400) return Response.json({ error: error.message || "请求格式不正确" }, { status: 400 });
-  if (error?.status === 403) return Response.json({ error: error.message || "没有权限" }, { status: 403 });
-  if (error?.status === 409) return Response.json({ error: error.message || "数据已被更新，请刷新后重试" }, { status: 409 });
-  if (error?.status === 404) return Response.json({ error: error.message || "没有找到数据" }, { status: 404 });
-  return Response.json({ error: error?.message || "服务器错误" }, { status: 500 });
 }

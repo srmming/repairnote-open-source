@@ -1,19 +1,21 @@
-import { authErrorResponse, requirePageAccess } from "@/lib/auth";
+import { errorResponse, requestIdOf } from "@/lib/api-errors";
+import { portalJson, requirePortalContext } from "@/lib/portal-context";
 import { reportOverview } from "@/lib/report-store";
 
 export async function GET(request) {
+  const requestId = requestIdOf(request);
   try {
-    await requirePageAccess("reports");
+    const ctx = await requirePortalContext(request, { anyOf: ["reports"] });
     const params = new URL(request.url).searchParams;
     const range = getRange(params);
-    const result = await reportOverview({
+    const result = await reportOverview(ctx, {
       start: range.start,
       end: range.end,
       granularity: params.get("granularity") || "day"
     });
-    return Response.json({ ...result, range: { preset: range.preset, ...result.range } });
+    return portalJson(ctx, { ...result, range: { preset: range.preset, ...result.range } });
   } catch (error) {
-    return authErrorResponse(error);
+    return errorResponse(error, { requestId });
   }
 }
 

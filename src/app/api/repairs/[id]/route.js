@@ -1,37 +1,49 @@
-import { authErrorResponse, requireAnyPageAccess } from "@/lib/auth";
+import { badRequest, errorResponse, readJsonBody, requestIdOf } from "@/lib/api-errors";
+import { assertNoPortalOverride, portalJson, requirePortalContext } from "@/lib/portal-context";
 import { deleteRepairRecord, getRepairById, saveRepairRecord } from "@/lib/data-store";
 
-export async function GET(_request, { params }) {
+const ACCESS = { anyOf: ["repairs"] };
+
+export async function GET(request, { params }) {
+  const requestId = requestIdOf(request);
   try {
-    await requireAnyPageAccess(["repairs", "warranties"]);
+    const ctx = await requirePortalContext(request, ACCESS);
     const { id } = await params;
-    const repair = await getRepairById(id);
-    if (!repair) return Response.json({ error: "没有找到这张订单" }, { status: 404 });
-    return Response.json({ repair });
+    const repair = await getRepairById(ctx, id);
+    if (!repair) return errorResponse({ status: 404, code: "REPAIR_NOT_FOUND", message: "没有找到这张订单" }, { requestId, headers: { "X-Portal-Id": ctx.portalId } });
+    return portalJson(ctx, { repair });
   } catch (error) {
-    return authErrorResponse(error);
+    return errorResponse(error, { requestId });
   }
 }
 
+// 新建：顶层 createOnly:true；已有对象更新必须带旧 updatedAt，不得带 createOnly。
 export async function PUT(request, { params }) {
+  const requestId = requestIdOf(request);
   try {
-    const staff = await requireAnyPageAccess(["repairs", "warranties"]);
+    const ctx = await requirePortalContext(request, ACCESS);
     const { id } = await params;
-    const body = await request.json();
+    const body = await readJsonBody(request);
+    assertNoPortalOverride(ctx, body);
+    assertNoPortalOverride(ctx, body.repair);
+    assertNoPortalOverride(ctx, body.client);
+    if (body.createOnly !== undefined && typeof body.createOnly !== "boolean") throw badRequest("createOnly 必须是布尔值");
     const repair = { ...(body.repair || {}), id };
-    return Response.json(await saveRepairRecord({ repair, client: body.client || null, actor: { isAdmin: staff.isAdmin } }));
+    return portalJson(ctx, await saveRepairRecord(ctx, { repair, client: body.client || null, createOnly: body.createOnly === true }));
   } catch (error) {
-    return authErrorResponse(error);
+    return errorResponse(error, { requestId });
   }
 }
 
 export async function DELETE(request, { params }) {
+  const requestId = requestIdOf(request);
   try {
-    const staff = await requireAnyPageAccess(["repairs", "warranties"]);
+    const ctx = await requirePortalContext(request, ACCESS);
     const { id } = await params;
-    const body = await request.json().catch(() => ({}));
-    return Response.json(await deleteRepairRecord(id, { actor: { isAdmin: staff.isAdmin }, updatedAt: body?.updatedAt }));
+    const body = await readJsonBody(request);
+    assertNoPortalOverride(ctx, body);
+    return portalJson(ctx, await deleteRepairRecord(ctx, id, { updatedAt: body.updatedAt }));
   } catch (error) {
-    return authErrorResponse(error);
+    return errorResponse(error, { requestId });
   }
 }

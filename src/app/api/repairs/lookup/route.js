@@ -1,13 +1,15 @@
-import { authErrorResponse, requireAnyPageAccess } from "@/lib/auth";
+import { errorResponse, requestIdOf } from "@/lib/api-errors";
+import { portalJson, requirePortalContext } from "@/lib/portal-context";
 import { lookupRepairByScan } from "@/lib/data-store";
 
 export async function GET(request) {
+  const requestId = requestIdOf(request);
   try {
-    await requireAnyPageAccess(["repairs", "warranties"]);
+    const ctx = await requirePortalContext(request, { anyOf: ["repairs"] });
     const value = new URL(request.url).searchParams.get("value") || "";
-    const repair = await lookupRepairByScan(value);
-    return Response.json({ repair });
+    const repair = await lookupRepairByScan(ctx, value);
+    return portalJson(ctx, { repair });
   } catch (error) {
-    return authErrorResponse(error);
+    return errorResponse(error, { requestId });
   }
 }

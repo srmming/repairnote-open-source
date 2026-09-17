@@ -1,11 +1,13 @@
-import { authErrorResponse, requirePageAccess } from "@/lib/auth";
+import { errorResponse, requestIdOf } from "@/lib/api-errors";
+import { portalJson, requirePortalContext } from "@/lib/portal-context";
 import { reportFinance } from "@/lib/report-store";
 
 export async function GET(request) {
+  const requestId = requestIdOf(request);
   try {
-    await requirePageAccess("finance");
+    const ctx = await requirePortalContext(request, { anyOf: ["finance"] });
     const params = new URL(request.url).searchParams;
-    const result = await reportFinance({
+    const result = await reportFinance(ctx, {
       start: params.get("start") || "",
       end: params.get("end") || "",
       q: params.get("q") || "",
@@ -14,8 +16,8 @@ export async function GET(request) {
       unpaidPage: params.get("unpaidPage") || "1",
       pageSize: params.get("pageSize") || ""
     });
-    return Response.json(result);
+    return portalJson(ctx, result);
   } catch (error) {
-    return authErrorResponse(error);
+    return errorResponse(error, { requestId });
   }
 }
