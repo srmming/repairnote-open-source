@@ -1,14 +1,15 @@
-# verify-portals 结果（2026-09-17T02:23:40.730Z）
+# verify-portals 结果（2026-09-17T17:26:41.346Z）
 
-通过 54 / 失败 0
+通过 55 / 失败 0
 
 | 用例 | 名称 | 结果 | 说明 |
 |---|---|---|---|
 | G02 | 非系统管理员访问 system API 全部 403；未登录 401 | PASS | 403/401 与数据不变 |
 | G03 | 系统管理接口携带 X-Portal-Id 返回 400；无门户系统管理员可列出门户 | PASS | 无门户系统管理员可管理、不可访问业务 |
-| G04 | 系统管理员只输入名称创建门户：Portal+空Setting+创建者管理员，revision=1 | PASS | id=14234c81-c46c-4a67-abc5-faea6415d8ab |
+| G04 | 系统管理员只输入名称创建门户：Portal+空Setting+创建者管理员，revision=1 | PASS | id=ebb2643e-59bf-41df-ae4a-73258cedebb6 |
 | G06 | 同 key 同名称重放返回 200 且不重复创建；缺失 / 非法 key 400 | PASS | 重放 200 / created=false |
-| G06b | 同操作者同 key 并发双提交只产生一个门户 | PASS | portal=69680610-e9b7-4c18-bcdf-c5faf8bce060 |
+| G06b | 同操作者同 key 并发双提交只产生一个门户 | PASS | portal=7405a0d8-addf-42e3-87ff-04eccfd1587b |
+| G04b | 新建门户同时创建独立管理员账号：账号只属于新门户、非系统管理员；重名 409；弱密码 400；重放不重复建账号 | PASS | 独立账号正确 |
 | G08 | 同 key 不同名称 409 IDEMPOTENCY_CONFLICT；另一操作者使用同 key 独立作用域 | PASS | 409 / 独立作用域 |
 | G10 | 改名只改元数据与 revision；非法输入 400；字符串布尔拒绝 | PASS | revision=3 |
 | G07 | 改名后重放原创建请求仍识别同一门户（按创建时载荷摘要） | PASS | 重放识别同一门户 |
@@ -37,7 +38,7 @@
 | D08/D09 | 单权限用户提交其他目录分区 403；允许分区更新且未提交分区不清空；products 要求双权限 | PASS | 分区授权正确 |
 | D10 | 旧 /api/repairs 集合入口 410/405；/api/clients GET 410 | PASS | 410/405 |
 | D11 | 相同会话先 A 后 B：响应头 X-Portal-Id 正确，无共享缓存 | PASS | 无混入 |
-| D12 | 小资源 GET（catalog / attributes / technicians）不读取全量维修单 / 客户 | PASS | 三个小资源接口 7ms（源码：getBootstrapData 不再包含 repairs/clients；见 data-store.getBootstrapData） |
+| D12 | 小资源 GET（catalog / attributes / technicians）不读取全量维修单 / 客户 | PASS | 三个小资源接口 15ms（源码：getBootstrapData 不再包含 repairs/clients；见 data-store.getBootstrapData） |
 | C01 | 更新 / 删除已有维修单省略 updatedAt 400、非法 400、过期 409；数据与 revision 不变 | PASS | 400/409 |
 | C02 | 两个独立请求用同一版本更新金额：一成功一 409；同毫秒版本递增；createOnly 不能更新已有对象 | PASS | 乐观锁有效 |
 | C03 | 更新与删除并发；锁单后普通员工提交 403；有保修来源的原单删除 409 | PASS | 保护有效 |

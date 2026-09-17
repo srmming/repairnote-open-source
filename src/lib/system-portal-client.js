@@ -51,7 +51,7 @@ export function createSystemApi(handlers = {}) {
       params.set("pageSize", String(pageSize));
       return request(`/api/system/portals?${params.toString()}`);
     },
-    createPortal: (name, idempotencyKey) => request("/api/system/portals", jsonInit("POST", { name }, { "Idempotency-Key": idempotencyKey })),
+    createPortal: (name, idempotencyKey, initialAdmin = null) => request("/api/system/portals", jsonInit("POST", initialAdmin ? { name, initialAdmin } : { name }, { "Idempotency-Key": idempotencyKey })),
     updatePortal: (portalId, payload) => request(`/api/system/portals/${encodeURIComponent(portalId)}`, jsonInit("PATCH", payload)),
     listMembers: (portalId, { page = 1, pageSize = 100 } = {}) => request(`/api/system/portals/${encodeURIComponent(portalId)}/members?page=${page}&pageSize=${pageSize}`),
     findStaff: (username) => request(`/api/system/staff?username=${encodeURIComponent(username)}`),

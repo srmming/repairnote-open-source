@@ -7607,6 +7607,8 @@ button:disabled {
 .portal-member-dialog { max-width: 720px; }
 .badge-muted { background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
 .portal-management-entry { margin-bottom: 16px; }
+.portal-create-admin-toggle { margin-top: 12px; }
+.portal-create-admin { margin-top: 8px; padding: 10px 12px; border: 1px solid hsl(var(--border)); border-radius: 10px; }
 @media (max-width: 767px) {
   .portal-list-item { grid-template-columns: auto 1fr auto; }
   .portal-list-role { grid-column: 2; }

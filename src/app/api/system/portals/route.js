@@ -15,8 +15,8 @@ export async function GET(request) {
 
 export async function POST(request) {
   return systemWrite(request, async (actor, body) => {
-    assertOnlyKeys(body, ["name"], "创建门户请求");
-    const result = await createSystemPortal(actor, { name: body.name, idempotencyKey: request.headers.get("idempotency-key") });
+    assertOnlyKeys(body, ["name", "initialAdmin"], "创建门户请求");
+    const result = await createSystemPortal(actor, { name: body.name, initialAdmin: body.initialAdmin, idempotencyKey: request.headers.get("idempotency-key") });
     return { status: result.created ? 201 : 200, body: result };
   });
 }

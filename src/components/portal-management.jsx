@@ -46,6 +46,13 @@ const TEXT = {
     close: "关闭",
     portalNamePlaceholder: "门户名称（1–80 个字符）",
     createHint: "只需填写名称。系统会自动建立空的门店设置，并把你加为这个门户的管理员；业务数据不会复制。打印抬头请到该门户的设置页填写。",
+    createAdminToggle: "同时为这个门户创建一个独立的管理员账号（发给使用者）",
+    createAdminHint: "这个账号只属于这个门户，登录后直接进入自己的工作区，看不到其他门户。",
+    adminUsername: "登录用户名",
+    adminPassword: "登录密码（至少 6 位）",
+    adminName: "显示姓名（可不填）",
+    createdWithAdmin: (username) => `门户已创建，账号 ${username} 可以登录了`,
+    usernameTaken: "该用户名已被使用，请换一个",
     created: "门户已创建",
     renamed: "名称已更新",
     disableConfirm: "停用后，成员将无法进入此门户，客户查询链接暂不可用；数据会保留，可随时重新启用。确定停用吗？",
@@ -115,6 +122,13 @@ const TEXT = {
     close: "Cerrar",
     portalNamePlaceholder: "Nombre del portal (1–80 caracteres)",
     createHint: "Solo hace falta el nombre. Se crearán ajustes vacíos y serás administrador de este portal; no se copian datos. El nombre de impresión se configura en los ajustes de ese portal.",
+    createAdminToggle: "Crear también una cuenta de administrador independiente para este portal",
+    createAdminHint: "Esta cuenta solo pertenece a este portal; al entrar irá directo a su espacio y no verá otros portales.",
+    adminUsername: "Usuario",
+    adminPassword: "Contraseña (mínimo 6 caracteres)",
+    adminName: "Nombre visible (opcional)",
+    createdWithAdmin: (username) => `Portal creado; la cuenta ${username} ya puede entrar`,
+    usernameTaken: "Ese usuario ya existe, elige otro",
     created: "Portal creado",
     renamed: "Nombre actualizado",
     disableConfirm: "Al desactivar, los miembros no podrán entrar y los enlaces de consulta dejarán de funcionar temporalmente; los datos se conservan y se puede reactivar. ¿Desactivar?",
@@ -180,6 +194,8 @@ export function PortalManagementPage({ identity, lang = "zh", onBack, backLabel,
   const [notice, setNotice] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
+  const [createAdmin, setCreateAdmin] = useState(false);
+  const [adminForm, setAdminForm] = useState({ username: "", password: "", name: "" });
   const createKeyRef = useRef(newIdempotencyKey());
   const [renameTarget, setRenameTarget] = useState(null);
   const [renameValue, setRenameValue] = useState("");
@@ -192,10 +208,10 @@ export function PortalManagementPage({ identity, lang = "zh", onBack, backLabel,
   useEffect(() => {
     if (!registerLeaveGuard) return undefined;
     return registerLeaveGuard({
-      isDirty: () => (createOpen && createName.trim().length > 0) || (renameTarget && renameValue.trim() !== renameTarget.name) || dirtyRef.current(),
+      isDirty: () => (createOpen && (createName.trim().length > 0 || adminForm.username || adminForm.password)) || (renameTarget && renameValue.trim() !== renameTarget.name) || dirtyRef.current(),
       isSaving: () => pendingRef.current > 0
     });
-  }, [registerLeaveGuard, createOpen, createName, renameTarget, renameValue]);
+  }, [registerLeaveGuard, createOpen, createName, adminForm, renameTarget, renameValue]);
 
   const showNotice = useCallback((message) => {
     if (toast) toast(message);
@@ -245,6 +261,10 @@ export function PortalManagementPage({ identity, lang = "zh", onBack, backLabel,
         showNotice(t("lastAdmin"));
         return null;
       }
+      if (error.code === "USERNAME_TAKEN") {
+        showNotice(t("usernameTaken"));
+        return null;
+      }
       if (error.code === "STALE_VIEW") return null;
       showNotice(error.message || t("loadFailed"));
       return null;
@@ -254,18 +274,24 @@ export function PortalManagementPage({ identity, lang = "zh", onBack, backLabel,
     }
   }
 
+  const adminFormValid = !createAdmin || (adminForm.username.trim().length > 0 && adminForm.password.length >= 6);
+
   const submitCreate = async (event) => {
     event.preventDefault();
-    if (busy) return;
+    if (busy || !adminFormValid) return;
     const name = createName.trim();
     if (!name) return;
+    const initialAdmin = createAdmin ? { username: adminForm.username.trim(), password: adminForm.password, ...(adminForm.name.trim() ? { name: adminForm.name.trim() } : {}) } : null;
     // 一次创建尝试使用同一个 Idempotency-Key；网络失败后的重试复用它，成功后才更换。
-    const result = await runWrite(() => api.createPortal(name, createKeyRef.current));
+    const result = await runWrite(() => api.createPortal(name, createKeyRef.current, initialAdmin));
     if (!result) return;
     createKeyRef.current = newIdempotencyKey();
+    const createdUsername = result.initialAdmin?.username || "";
     setCreateName("");
+    setCreateAdmin(false);
+    setAdminForm({ username: "", password: "", name: "" });
     setCreateOpen(false);
-    showNotice(t("created"));
+    showNotice(createdUsername ? t("createdWithAdmin", createdUsername) : t("created"));
     await loadList();
   };
 
@@ -379,12 +405,23 @@ export function PortalManagementPage({ identity, lang = "zh", onBack, backLabel,
 
       <Dialog open={createOpen} onOpenChange={(open) => { if (!open && !busy) setCreateOpen(false); }} title={t("addPortal")}>
         <DialogBody>
-          <form onSubmit={submitCreate}>
+          <form onSubmit={submitCreate} autoComplete="off">
             <Field><Input value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder={t("portalNamePlaceholder")} maxLength={80} required autoFocus /></Field>
             <p className="portal-form-hint">{t("createHint")}</p>
+            <CheckboxLine className="portal-create-admin-toggle"><Checkbox checked={createAdmin} onChange={(event) => setCreateAdmin(event.target.checked)} /> {t("createAdminToggle")}</CheckboxLine>
+            {createAdmin ? (
+              <div className="portal-create-admin">
+                <FieldGroup>
+                  <Field className="col-6"><Input value={adminForm.username} onChange={(event) => setAdminForm((current) => ({ ...current, username: event.target.value }))} placeholder={t("adminUsername")} autoComplete="off" required /></Field>
+                  <Field className="col-6"><Input type="password" value={adminForm.password} onChange={(event) => setAdminForm((current) => ({ ...current, password: event.target.value }))} placeholder={t("adminPassword")} autoComplete="new-password" required minLength={6} /></Field>
+                  <Field className="col-12"><Input value={adminForm.name} onChange={(event) => setAdminForm((current) => ({ ...current, name: event.target.value }))} placeholder={t("adminName")} /></Field>
+                </FieldGroup>
+                <p className="portal-form-hint">{t("createAdminHint")}</p>
+              </div>
+            ) : null}
             <DialogFooter>
               <Button variant="outline" type="button" onClick={() => setCreateOpen(false)} disabled={busy}>{t("cancel")}</Button>
-              <Button type="submit" disabled={busy || !createName.trim()}>{busy ? t("saving") : t("create")}</Button>
+              <Button type="submit" disabled={busy || !createName.trim() || !adminFormValid}>{busy ? t("saving") : t("create")}</Button>
             </DialogFooter>
           </form>
         </DialogBody>

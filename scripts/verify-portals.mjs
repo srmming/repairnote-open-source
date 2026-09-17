@@ -301,6 +301,31 @@ try {
     return `portal=${r1.json.portal.id}`;
   });
 
+  await check("G04b", "新建门户同时创建独立管理员账号：账号只属于新门户、非系统管理员；重名 409；弱密码 400；重放不重复建账号", async () => {
+    const key = newKey();
+    const r = await sys.sys("POST", "/api/system/portals", { name: "带账号门户", initialAdmin: { username: "portal-owner", password: "Owner-Pass-1" } }, { "Idempotency-Key": key });
+    assert(r.status === 201 && r.json.initialAdmin?.username === "portal-owner" && r.json.portal.memberCount === 2, `${r.status} ${r.text}`);
+    const staff = await prisma.staff.findUnique({ where: { username: "portal-owner" }, include: { memberships: true } });
+    assert(staff && !staff.isSystemAdmin && staff.memberships.length === 1 && staff.memberships[0].portalId === r.json.portal.id && staff.memberships[0].isAdmin, "新账号归属错误");
+    const replay = await sys.sys("POST", "/api/system/portals", { name: "带账号门户", initialAdmin: { username: "portal-owner", password: "Owner-Pass-1" } }, { "Idempotency-Key": key });
+    assert(replay.status === 200 && replay.json.created === false, `重放 ${replay.status}`);
+    assert((await prisma.staff.count({ where: { username: "portal-owner" } })) === 1, "重放不得重复建账号");
+    const dup = await sys.sys("POST", "/api/system/portals", { name: "另一个", initialAdmin: { username: "portal-owner", password: "Owner-Pass-1" } }, { "Idempotency-Key": newKey() });
+    assert(dup.status === 409 && dup.json.code === "USERNAME_TAKEN", `重名 ${dup.status}`);
+    const weak = await sys.sys("POST", "/api/system/portals", { name: "另一个", initialAdmin: { username: "x-weak", password: "123" } }, { "Idempotency-Key": newKey() });
+    assert(weak.status === 400, `弱密码 ${weak.status}`);
+    const sysFlag = await sys.sys("POST", "/api/system/portals", { name: "另一个", initialAdmin: { username: "x-sys", password: "Owner-Pass-1", isSystemAdmin: true } }, { "Idempotency-Key": newKey() });
+    assert(sysFlag.status === 400, `isSystemAdmin ${sysFlag.status}`);
+    assert((await prisma.portal.count({ where: { name: "另一个" } })) === 0, "失败不得留下门户");
+    const owner = makeClient("portal-owner");
+    await owner.login("portal-owner", "Owner-Pass-1");
+    const mine = await owner.get("/api/portals");
+    assert(mine.json.portals.length === 1 && mine.json.portals[0].id === r.json.portal.id, "新账号只看到自己的门户");
+    assert((await owner.get("/api/bootstrap", "default")).status === 403 && (await owner.get("/api/system/portals")).status === 403, "新账号不能进其他门户 / 系统接口");
+    await prisma.portal.update({ where: { id: r.json.portal.id }, data: { isActive: false } });
+    return "独立账号正确";
+  });
+
   await check("G08", "同 key 不同名称 409 IDEMPOTENCY_CONFLICT；另一操作者使用同 key 独立作用域", async () => {
     const r = await sys.sys("POST", "/api/system/portals", { name: "B 测试门户 改名" }, { "Idempotency-Key": createKey });
     assert(r.status === 409 && r.json.code === "IDEMPOTENCY_CONFLICT", `${r.status} ${r.text}`);

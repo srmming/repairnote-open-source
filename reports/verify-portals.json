@@ -1,7 +1,7 @@
 {
-  "at": "2026-09-17T02:23:40.730Z",
+  "at": "2026-09-17T17:26:41.346Z",
   "baseUrl": "http://localhost:3010",
-  "passed": 54,
+  "passed": 55,
   "failed": 0,
   "results": [
     {
@@ -20,7 +20,7 @@
       "id": "G04",
       "name": "系统管理员只输入名称创建门户：Portal+空Setting+创建者管理员，revision=1",
       "ok": true,
-      "detail": "id=14234c81-c46c-4a67-abc5-faea6415d8ab"
+      "detail": "id=ebb2643e-59bf-41df-ae4a-73258cedebb6"
     },
     {
       "id": "G06",
@@ -32,7 +32,13 @@
       "id": "G06b",
       "name": "同操作者同 key 并发双提交只产生一个门户",
       "ok": true,
-      "detail": "portal=69680610-e9b7-4c18-bcdf-c5faf8bce060"
+      "detail": "portal=7405a0d8-addf-42e3-87ff-04eccfd1587b"
+    },
+    {
+      "id": "G04b",
+      "name": "新建门户同时创建独立管理员账号：账号只属于新门户、非系统管理员；重名 409；弱密码 400；重放不重复建账号",
+      "ok": true,
+      "detail": "独立账号正确"
     },
     {
       "id": "G08",
@@ -206,7 +212,7 @@
       "id": "D12",
       "name": "小资源 GET（catalog / attributes / technicians）不读取全量维修单 / 客户",
       "ok": true,
-      "detail": "三个小资源接口 7ms（源码：getBootstrapData 不再包含 repairs/clients；见 data-store.getBootstrapData）"
+      "detail": "三个小资源接口 15ms（源码：getBootstrapData 不再包含 repairs/clients；见 data-store.getBootstrapData）"
     },
     {
       "id": "C01",

@@ -3,7 +3,7 @@
 - 提交：见分支 `claude/multi-portal-handoff-f84f3c` 最终提交（基线 `aa035f88a67aae5b9c0f80aa3830c61a6bd0d87b`，本分支起点 HEAD 与基线一致）。
 - 环境：macOS，Node v26.7.0（项目要求 ≥24），MySQL 8.4（docker `mysql:8.4`，InnoDB，默认 REPEATABLE READ），Chrome（Playwright channel）。
 - 测试库：`repairnote_test`（API / 浏览器验收，脚本每次清空重建）、`repairnote_upgrade_test`（旧库升级演练）、`repairnote_partial_test`（残缺库预检）。测试服务 `NODE_ENV=production node server.js`，`REPAIRNOTE_PUBLIC_ORIGIN=http://localhost:3010`。
-- 证据：`reports/verify-portals.md`（API+数据库断言，54 条检查）、`reports/smoke-portals.json` + `reports/screenshots/*.png`（网页路径，桌面 / 窄屏）、`reports/migration-before.json` / `migration-after.json`（升级演练）、`reports/BUG-REVIEW-处理结论.md`。
+- 证据：`reports/verify-portals.md`（API+数据库断言，55 条检查）、`reports/smoke-portals.json` + `reports/screenshots/*.png`（网页路径，桌面 / 窄屏）、`reports/migration-before.json` / `migration-after.json`（升级演练）、`reports/BUG-REVIEW-处理结论.md`。
 - 状态定义：PASS = 实际执行并通过；BLOCKED = 本环境无法执行（说明原因），**不视为通过**；不存在“默认通过”。
 - 命令（退出码 0 除非注明）：`npm ci`、`npx prisma validate`、`npx prisma generate`、`npm run build`、`npm run lint`、`npm run smoke`、`npm run smoke:mobile`、`npm run smoke:mobile:boss`、`node scripts/verify-reports-parity.mjs`、`node scripts/verify-portal-migration.mjs --before/--after`、`node scripts/verify-portals.mjs`、`node scripts/smoke-portals.mjs`、`npm audit --omit=dev`（退出码 1，见 R05）、`npm run plesk:pack`。
 
@@ -126,7 +126,7 @@
 | G01 | PASS | smoke-portals：系统管理员见入口，门店管理员 / 员工不见；窄屏截图 |
 | G02 | PASS | VP G02 + smoke-portals 门店管理员访问管理 hash 无数据 |
 | G03 | PASS | VP G03 + smoke-portals 无门户系统管理员直接进管理页并新建 |
-| G04 | PASS | VP G04 + smoke-portals 新建门户 |
+| G04 | PASS | VP G04 + smoke-portals 新建门户；VP G04b：新建时可选同时创建只属于该门户的管理员账号（用户确认的范围内补充），重名 409、弱密码 400、重放不重复建账号、新账号不能进其他门户 / 系统接口 |
 | G05 | PASS（代码级）| Portal/Setting/Member 在同一 `prisma.$transaction` 创建，任一失败回滚；未做注入失败的自动化用例 |
 | G06 | PASS | VP G06、G06b（并发双提交） |
 | G07 | PASS | VP G07 |
