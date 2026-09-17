@@ -98,7 +98,7 @@
 | M02 | PASS | `repairnote_upgrade_test`：旧结构 + 数据 → 预检要求显式 ID → 升级 → `verify-portal-migration --after` 通过（15 表行数 / 金额 / token / id 一致，全部 default，权限回填，旧会话清空） |
 | M03 | PASS | 只有 Staff 表的库：预检列出全部差异并停止，未标记迁移 |
 | M04 | BLOCKED | 未在本地演练“结构迁移中途失败后恢复”；回滚流程（备份 + 旧代码）写入运维说明 §3 |
-| M05 | PASS（Plesk 包）/ BLOCKED（Docker） | `npm run plesk:pack` 生成包含 migrations、`db-setup`/`db-preflight`/`portal-admin`/`verify-portal-migration`、文档的 ZIP；Docker 镜像构建 / 启动未在本环境执行 |
+| M05 | PASS | `npm run plesk:pack` 生成包含 migrations、`db-setup`/`db-preflight`/`portal-admin`/`verify-portal-migration`、文档的 ZIP；`docker build` 成功，镜像用空库 `repairnote_docker_test` 启动：预检 → 迁移 → 严格凭据创建系统主管理员 → check 通过，登录 / 门户列表 / 创建第二门户 API 均成功；缺少 `REPAIRNOTE_PUBLIC_ORIGIN` 时容器拒绝启动（非零退出） |
 
 ## S. 安全修复
 
@@ -150,5 +150,5 @@
 
 ## 汇总
 
-- PASS：85；PASS（部分 / 代码级）：6（U03、U06、B08、P04、G05、R05）；BLOCKED：3（M04、M05-Docker、R04）。
+- PASS：86；PASS（部分 / 代码级）：6（U03、U06、B08、P04、G05、R05）；BLOCKED：2（M04、R04）。
 - BLOCKED 项均为需要真实部署环境或破坏性迁移中断演练的内容，已写入运维说明，**上线前必须由部署负责人完成**。
