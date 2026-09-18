@@ -13,6 +13,9 @@ jobs:
   build-lint:
     name: 构建与静态检查
     runs-on: ubuntu-latest
+    env:
+      # 只做校验 / 构建，不连数据库；Prisma 读取 schema 时要求变量存在
+      DATABASE_URL: mysql://unused:unused@127.0.0.1:3306/unused
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,8 +27,6 @@ jobs:
       - run: npx prisma generate
       - run: npm run lint
       - run: npm run build
-        env:
-          DATABASE_URL: mysql://unused:unused@127.0.0.1:3306/unused
 
   acceptance-mysql:
     name: 多门户验收（MySQL 8.4：API + 浏览器）
