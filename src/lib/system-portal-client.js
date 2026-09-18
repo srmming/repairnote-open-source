@@ -57,6 +57,9 @@ export function createSystemApi(handlers = {}) {
     findStaff: (username) => request(`/api/system/staff?username=${encodeURIComponent(username)}`),
     setMember: (portalId, staffId, payload) => request(`/api/system/portals/${encodeURIComponent(portalId)}/members/${encodeURIComponent(staffId)}`, jsonInit("PUT", payload)),
     removeMember: (portalId, staffId, expectedRevision) => request(`/api/system/portals/${encodeURIComponent(portalId)}/members/${encodeURIComponent(staffId)}`, jsonInit("DELETE", { expectedRevision })),
+    activate: () => {
+      disposed = false;
+    },
     dispose: () => {
       disposed = true;
     }

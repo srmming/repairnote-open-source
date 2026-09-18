@@ -1439,11 +1439,18 @@ function Workspace({ identity, portal, api, initialRoute, onLogout, onSwitchPort
     return run;
   }
 
+  const modalRef = useRef(null);
+  useEffect(() => {
+    modalRef.current = modal;
+  }, [modal]);
+
   useEffect(() => {
     if (!registerLeaveGuard) return undefined;
     return registerLeaveGuard({
-      isDirty: () => hasUnsavedDetailChanges(),
-      isSaving: () => pendingWritesRef.current > 0
+      // 未保存的维修单 / 设置表单，或任何打开中的编辑弹窗（客户 / 员工 / 目录 / 技师）
+      isDirty: () => hasUnsavedDetailChanges() || Boolean(modalRef.current),
+      // 队列计数 + API 实例内所有进行中的非 GET 请求（客户 / 设置 / 备份恢复 / 导入等直接调用 api 的路径）
+      isSaving: () => pendingWritesRef.current > 0 || (api?.pendingWrites?.() || 0) > 0
     });
   }, [registerLeaveGuard]);
 
@@ -1787,7 +1794,7 @@ function Workspace({ identity, portal, api, initialRoute, onLogout, onSwitchPort
   async function saveStaffRecord(staffPayload) {
     saveQueueRef.current = enqueueWrite(async () => {
       try {
-        const saved = await api.json("/api/staff", "POST", staffPayload);
+        const saved = await api.json("/api/staff", "POST", { ...staffPayload, expectedRevision: confirmedDataRef.current._revision });
         applyStaffSaveResult(saved);
         if (saved.passwordChanged && saved.user?.id === identity?.id) {
           showToast(t("passwordChangedRelogin"));
@@ -1805,7 +1812,7 @@ function Workspace({ identity, portal, api, initialRoute, onLogout, onSwitchPort
   async function deleteStaffRecord(staffId) {
     saveQueueRef.current = enqueueWrite(async () => {
       try {
-        const saved = await api.json("/api/staff", "DELETE", { id: staffId });
+        const saved = await api.json("/api/staff", "DELETE", { id: staffId, expectedRevision: confirmedDataRef.current._revision });
         applyStaffSaveResult(saved);
         return true;
       } catch (error) {
@@ -4050,14 +4057,23 @@ function FinancePage({ data, filters, setFilters, navigate, lang, t }) {
   );
 }
 
-function SettingsPage({ data, saveSettingsOnly, toast, t, session, identity, onOpenSystem }) {
+function SettingsPage({ data, saveSettingsOnly, toast, t, session, identity, onOpenSystem, registerUnsavedGuard }) {
   const canEditSettings = canAccessPage(session, "settings");
   const settingsKey = useMemo(() => stableStringify(data.settings || {}), [data.settings]);
   const [draftSettings, setDraftSettings] = useState(() => data.settings || {});
   const [saving, setSaving] = useState(false);
+  const draftRef = useRef(draftSettings);
   useEffect(() => {
     setDraftSettings(data.settings || {});
   }, [settingsKey]);
+  useEffect(() => {
+    draftRef.current = draftSettings;
+  }, [draftSettings]);
+  // 设置表单纳入同一个未保存离开保护（切换门户 / 进入门户管理 / 退出前确认）
+  useEffect(() => {
+    if (!registerUnsavedGuard) return undefined;
+    return registerUnsavedGuard({ isDirty: () => stableStringify(draftRef.current || {}) !== stableStringify(data.settings || {}) });
+  }, [registerUnsavedGuard, settingsKey]);
   const update = (key, value) => setDraftSettings((current) => ({ ...(current || {}), [key]: value }));
   const saveSettings = async () => {
     setSaving(true);
@@ -8427,17 +8443,22 @@ export default function AppPage() {
   const currentPortalId = currentPortal?.id || "";
 
   // 每个工作区实例一个不可变门户的 API 客户端；切换 / 卸载时作废迟到响应。
+  // useMemo 的计算函数在严格模式下会被调用两次，因此这里只创建、不销毁、不改共享引用；
+  // 销毁放在 effect 的清理里：同一个实例被替换或组件卸载时作废，迟到响应不会写入新工作区。
   const api = useMemo(() => {
-    apiRef.current?.dispose();
-    apiRef.current = null;
     if (!workspaceKey) return null;
-    const instance = createPortalApi(currentPortalId, { onUnauthorized, onPortalLost });
-    apiRef.current = instance;
-    return instance;
+    return createPortalApi(currentPortalId, { onUnauthorized, onPortalLost });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceKey]);
 
-  useEffect(() => () => apiRef.current?.dispose(), []);
+  useEffect(() => {
+    apiRef.current = api;
+    api?.activate();
+    return () => {
+      if (apiRef.current === api) apiRef.current = null;
+      api?.dispose();
+    };
+  }, [api]);
 
   if (!mounted || !identityLoaded) return null;
 

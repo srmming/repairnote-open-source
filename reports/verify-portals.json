@@ -1,7 +1,7 @@
 {
-  "at": "2026-09-17T17:26:41.346Z",
+  "at": "2026-09-18T13:04:36.619Z",
   "baseUrl": "http://localhost:3010",
-  "passed": 55,
+  "passed": 57,
   "failed": 0,
   "results": [
     {
@@ -20,7 +20,7 @@
       "id": "G04",
       "name": "系统管理员只输入名称创建门户：Portal+空Setting+创建者管理员，revision=1",
       "ok": true,
-      "detail": "id=ebb2643e-59bf-41df-ae4a-73258cedebb6"
+      "detail": "id=516ec6da-d989-4d66-9f1d-33124a9be620"
     },
     {
       "id": "G06",
@@ -32,7 +32,7 @@
       "id": "G06b",
       "name": "同操作者同 key 并发双提交只产生一个门户",
       "ok": true,
-      "detail": "portal=7405a0d8-addf-42e3-87ff-04eccfd1587b"
+      "detail": "portal=21c998b2-ef3b-4f84-8284-133d9f7fb965"
     },
     {
       "id": "G04b",
@@ -155,6 +155,18 @@
       "detail": "移出只影响 A"
     },
     {
+      "id": "A12b",
+      "name": "员工写入缺失 / 过期版本：400 / 409；两位管理员基于同一版本编辑同一员工只有一个成功",
+      "ok": true,
+      "detail": "版本检查覆盖员工写入"
+    },
+    {
+      "id": "D03b",
+      "name": "员工移出门户后：编辑其历史订单（技师不变）仍可保存；把订单改派给已移出员工被拒",
+      "ok": true,
+      "detail": "历史归属保留、新指派受限"
+    },
+    {
       "id": "A12",
       "name": "同门户两名管理员并发互相降级：至少一位保留",
       "ok": true,
@@ -212,7 +224,7 @@
       "id": "D12",
       "name": "小资源 GET（catalog / attributes / technicians）不读取全量维修单 / 客户",
       "ok": true,
-      "detail": "三个小资源接口 15ms（源码：getBootstrapData 不再包含 repairs/clients；见 data-store.getBootstrapData）"
+      "detail": "三个小资源接口 18ms（源码：getBootstrapData 不再包含 repairs/clients；见 data-store.getBootstrapData）"
     },
     {
       "id": "C01",

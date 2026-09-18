@@ -3,7 +3,7 @@
 - 提交：见分支 `claude/multi-portal-handoff-f84f3c` 最终提交（基线 `aa035f88a67aae5b9c0f80aa3830c61a6bd0d87b`，本分支起点 HEAD 与基线一致）。
 - 环境：macOS，Node v26.7.0（项目要求 ≥24），MySQL 8.4（docker `mysql:8.4`，InnoDB，默认 REPEATABLE READ），Chrome（Playwright channel）。
 - 测试库：`repairnote_test`（API / 浏览器验收，脚本每次清空重建）、`repairnote_upgrade_test`（旧库升级演练）、`repairnote_partial_test`（残缺库预检）。测试服务 `NODE_ENV=production node server.js`，`REPAIRNOTE_PUBLIC_ORIGIN=http://localhost:3010`。
-- 证据：`reports/verify-portals.md`（API+数据库断言，55 条检查）、`reports/smoke-portals.json` + `reports/screenshots/*.png`（网页路径，桌面 / 窄屏）、`reports/migration-before.json` / `migration-after.json`（升级演练）、`reports/BUG-REVIEW-处理结论.md`。
+- 证据：`reports/verify-portals.md`（API+数据库断言，57 条检查）、`reports/smoke-portals.json` + `reports/screenshots/*.png`（网页路径，桌面 / 窄屏）、`reports/migration-before.json` / `migration-after.json`（升级演练）、`reports/BUG-REVIEW-处理结论.md`。
 - 状态定义：PASS = 实际执行并通过；BLOCKED = 本环境无法执行（说明原因），**不视为通过**；不存在“默认通过”。
 - 命令（退出码 0 除非注明）：`npm ci`、`npx prisma validate`、`npx prisma generate`、`npm run build`、`npm run lint`、`npm run smoke`、`npm run smoke:mobile`、`npm run smoke:mobile:boss`、`node scripts/verify-reports-parity.mjs`、`node scripts/verify-portal-migration.mjs --before/--after`、`node scripts/verify-portals.mjs`、`node scripts/smoke-portals.mjs`、`npm audit --omit=dev`（退出码 1，见 R05）、`npm run plesk:pack`。
 
@@ -22,7 +22,7 @@
 | A09 | PASS | VP A09/G23：改 / 删 B 员工 404；isSystemAdmin 400；系统账号与共享账号全局身份 403 `IDENTITY_PROTECTED` |
 | A10 | PASS | VP A10：移出后 A 403、B 200、Staff 保留、会话仍在 |
 | A11 | PASS | VP G11/G12/G13/A11：停用后旧会话下一次请求 403 `PORTAL_INACTIVE`；G17 改权即时生效 |
-| A12 | PASS | VP A12：3 轮并发互降至少保留一位管理员，最多一方成功 |
+| A12 | PASS | VP A12：3 轮并发互降至少保留一位管理员，最多一方成功；VP A12b：员工写入缺失版本 400、过期 409，两位管理员基于同一版本编辑同一员工只有一个成功 |
 
 ## D. 数据访问与隔离
 
@@ -30,7 +30,7 @@
 |---|---|---|
 | D01 | PASS | VP D01：同 ticket / 品牌名 / 技师名跨门户并存，同门户 P2002，publicToken 全局唯一 |
 | D02 | PASS | VP D02/D03：B 客户 id / 嵌入 client.id 拒绝，无半张订单，A/B 摘要不变 |
-| D03 | PASS | VP D02/D03：B 技师、B 来源单、B 品牌 id 拒绝 |
+| D03 | PASS | VP D02/D03：B 技师、B 来源单、B 品牌 id 拒绝；VP D03b：员工移出门户后其历史订单（技师不变）仍可编辑 / 改状态，改派给已移出员工被拒 |
 | D04 | PASS | VP D04/D06：关键词只命中 B 时 total/counts 全 0 |
 | D05 | PASS | VP D05：直链 404、扫码 B token null、同号扫码命中 A |
 | D06 | PASS | VP D04/D06：A 90/20/70/30/60，B 200/50/150/60/140，技师看板、财务流水无 B |
@@ -57,10 +57,10 @@
 |---|---|---|
 | U01 | PASS | smoke-portals：桌面 / 窄屏登录、门户选择、工作区、管理页；窄屏无横向溢出；普通用户不见系统入口（截图 01–08） |
 | U02 | PASS | smoke-portals：单门户自动进入、多门户选择、侧栏显示当前门户名与切换 |
-| U03 | PASS（人工核对代码路径）| 未保存草稿保护复用原 RepairForm 守卫；外层 `canLeaveCurrentView` 在切门户 / 进管理页前确认；管理页表单注册同一守卫。未做自动化点击验证 |
-| U04 | PASS | 写队列计数 `pendingWritesRef`，未结束时切换被阻止并提示“正在保存”；旧 smoke 中曾因此阻止旧链接跳转，已改为工作区内旧链接直接映射（不算离开） |
+| U03 | PASS | 维修单草稿、设置表单、任何打开中的编辑弹窗、门户管理表单都接入同一离开保护；smoke-portals「设置页有未保存改动」实测：进管理页 / 切换门户各弹一次确认，取消后留在原页且输入保留 |
+| U04 | PASS | 写队列计数 + API 实例内所有进行中的非 GET 请求（客户 / 设置 / 备份恢复 / 导入 / 外部历史等直接调用 api 的路径全部计入），未结束时切换被阻止并提示“正在保存” |
 | U05 | PASS | smoke-portals「双标签页」：同账号两页分别停在 A / 第二门户互不跳店 |
-| U06 | PASS（代码级）| `createPortalApi` 捕获不可变 portalId，`dispose()` 后迟到响应作废；成员弹窗世代计数。未构造人工慢响应自动化用例 |
+| U06 | PASS（代码级）| `createPortalApi` 捕获不可变 portalId，`dispose()` 后迟到响应作废；实例在 effect 挂载时 activate、清理时 dispose（不在 useMemo 计算阶段做副作用），`next dev` 严格模式下 smoke-portals 14/14 通过；未构造人工慢响应自动化用例 |
 | U07 | PASS | smoke-ui 全程使用旧 `#/dashboard/...` 深链接（映射到唯一门户）；刷新 / 深链接恢复在 smoke-portals 覆盖 |
 | U08 | PASS | 侧栏、客户 / 技师历史、changelog 链接改为 `api.href()`；扫码 lookup 限定当前门户（VP D05） |
 | U09 | PASS | smoke-portals「临时错误不假登出」；VP A03/A11 覆盖 403 分类 |
@@ -96,8 +96,8 @@
 |---|---|---|
 | M01 | PASS | 空库 `db-setup`：严格凭据创建首位系统 / default 管理员，可从设置创建门户（smoke-portals） |
 | M02 | PASS | `repairnote_upgrade_test`：旧结构 + 数据 → 预检要求显式 ID → 升级 → `verify-portal-migration --after` 通过（15 表行数 / 金额 / token / id 一致，全部 default，权限回填，旧会话清空） |
-| M03 | PASS | 只有 Staff 表的库：预检列出全部差异并停止，未标记迁移 |
-| M04 | BLOCKED | 未在本地演练“结构迁移中途失败后恢复”；回滚流程（备份 + 旧代码）写入运维说明 §3 |
+| M03 | PASS | 预检改为从初始迁移 SQL 解析完整结构（每列类型 / 可空、全部索引、全部外键、主键）逐项比对；只有 Staff 表、缺 `Client_name_idx`、`Payment.note` 改成 TEXT 三种情况均被检出并停止，未标记迁移；已标记基线的旧库在多门户迁移前同样比对 |
+| M04 | PASS | 在 `repairnote_upgrade_test` 演练：mysqldump 备份 → 人为删掉迁移会 DROP 的索引并绕过预检直接 `migrate deploy` → 迁移在中途失败（Portal 表、`Staff.isSystemAdmin` 已因隐式提交留下，`_prisma_migrations` 记录未完成）→ 再跑 `db-setup` 被预检拒绝 → 从备份恢复 → 重新升级并 `verify-portal-migration --after` 通过 |
 | M05 | PASS | `npm run plesk:pack` 生成包含 migrations、`db-setup`/`db-preflight`/`portal-admin`/`verify-portal-migration`、文档的 ZIP；`docker build` 成功，镜像用空库 `repairnote_docker_test` 启动：预检 → 迁移 → 严格凭据创建系统主管理员 → check 通过，登录 / 门户列表 / 创建第二门户 API 均成功；缺少 `REPAIRNOTE_PUBLIC_ORIGIN` 时容器拒绝启动（非零退出） |
 
 ## S. 安全修复
@@ -148,7 +148,18 @@
 | G23 | PASS | VP A09/G23 |
 | G24 | PASS | VP G24 |
 
+## 审核意见处理（PR #1 第一轮）
+
+| # | 意见 | 处理 |
+|---|---|---|
+| 1 | bootstrap 数据与 revision 非同一快照 | `getBootstrapData` 无外部事务时整段读取放进同一个只读事务（REPEATABLE READ 快照）。未做真实并发插入复现，属代码级修复 |
+| 2 | 预检结构比对不完整 | 从初始迁移 SQL 解析完整结构逐项比对；补做 M04 中途失败恢复演练（见 M03 / M04） |
+| 3 | useMemo 内销毁客户端在严格模式失效 | 改为 effect 挂载 activate / 清理 dispose；`next dev` 严格模式实测 14/14 |
+| 4 | 员工移出后历史订单无法保存 | 技师引用只在新建或技师变化时校验（VP D03b） |
+| 5 | 保存中切换保护未覆盖全部写入 | API 实例统计所有非 GET 请求；设置表单与编辑弹窗纳入离开保护（U03 / U04） |
+| 6 | 员工写入可绕过版本检查 | 前端携带读取时版本，服务端缺失 400 / 过期 409（VP A12b） |
+
 ## 汇总
 
-- PASS：86；PASS（部分 / 代码级）：6（U03、U06、B08、P04、G05、R05）；BLOCKED：2（M04、R04）。
+- PASS：88；PASS（部分 / 代码级）：5（U06、B08、P04、G05、R05）；BLOCKED：1（R04，需真实部署环境）。
 - BLOCKED 项均为需要真实部署环境或破坏性迁移中断演练的内容，已写入运维说明，**上线前必须由部署负责人完成**。

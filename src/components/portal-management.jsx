@@ -183,7 +183,11 @@ function useText(lang) {
 export function PortalManagementPage({ identity, lang = "zh", onBack, backLabel, onLogout, onUnauthorized, onSystemRoleLost, registerLeaveGuard, toast }) {
   const t = useText(lang);
   const api = useMemo(() => createSystemApi({ onUnauthorized, onSystemRoleLost }), [onUnauthorized, onSystemRoleLost]);
-  useEffect(() => () => api.dispose(), [api]);
+  // 严格模式下 effect 会先清理再重跑：挂载时激活、清理时作废，不在 useMemo 计算阶段做副作用
+  useEffect(() => {
+    api.activate();
+    return () => api.dispose();
+  }, [api]);
 
   const [filters, setFilters] = useState({ q: "", status: "all", page: 1 });
   const [committedQuery, setCommittedQuery] = useState("");

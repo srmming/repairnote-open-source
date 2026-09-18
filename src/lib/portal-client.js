@@ -72,6 +72,7 @@ function toApiError(response, data) {
 export function createPortalApi(portalId, handlers = {}) {
   if (!isValidPortalId(portalId)) throw new Error("createPortalApi: 门户标识不合法");
   let disposed = false;
+  let pendingWrites = 0;
 
   function assertLive() {
     if (disposed) throw new ApiError(0, "STALE_WORKSPACE", "工作区已切换，响应已忽略");
@@ -101,12 +102,21 @@ export function createPortalApi(portalId, handlers = {}) {
     return data;
   }
 
+  // 所有非 GET 请求都计入“进行中的写入”，外层离开保护据此阻止切换门户 / 进管理页 / 退出。
+  function tracked(promise) {
+    pendingWrites += 1;
+    return promise.finally(() => {
+      pendingWrites -= 1;
+    });
+  }
+
   return {
     portalId,
     get: (url) => request(url),
-    json: (url, method, body) => request(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+    json: (url, method, body) => tracked(request(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })),
     // FormData 只加门户头：保留浏览器自动生成的 multipart 边界，不手写 Content-Type。
-    formData: (url, method, body) => request(url, { method, body }),
+    formData: (url, method, body) => tracked(request(url, { method, body })),
+    pendingWrites: () => pendingWrites,
     async download(url, filename) {
       assertLive();
       const response = await fetch(url, { headers: { "X-Portal-Id": portalId }, credentials: "same-origin" });
@@ -129,6 +139,10 @@ export function createPortalApi(portalId, handlers = {}) {
     },
     href: (logicalRoute) => buildPortalHash(portalId, logicalRoute),
     isDisposed: () => disposed,
+    // React 严格模式会把 effect 先清理再重跑：挂载时 activate，清理时 dispose，实例本身可复用。
+    activate: () => {
+      disposed = false;
+    },
     dispose: () => {
       disposed = true;
     }

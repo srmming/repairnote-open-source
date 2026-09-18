@@ -238,21 +238,46 @@ await step("无门户系统主管理员登录直接进入门户管理页，可�
 });
 
 await step("临时错误不假登出：bootstrap 500 后显示重试，登录仍在", async () => {
+  // 所有 bootstrap 都返回 500，直到用户点“重试”为止（开发模式严格模式下 effect 会重复触发请求，不能只拦一次）
   let intercepted = 0;
-  await workerPage.route("**/api/bootstrap", (route) => {
+  const failBootstrap = (route) => {
     intercepted += 1;
     return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "服务器错误", code: "INTERNAL_ERROR", requestId: "x" }) });
-  }, { times: 1 });
+  };
+  await workerPage.route("**/api/bootstrap", failBootstrap);
   await workerPage.reload();
   try {
     await workerPage.getByRole("button", { name: "重试" }).waitFor();
   } catch (error) {
-    throw new Error(`未出现重试按钮（拦截 ${intercepted} 次，url=${workerPage.url()}，页面文本：${(await workerPage.locator("body").innerText()).slice(0, 160).replace(/\s+/g, " ")}）`);
+    throw new Error(`未出现重试按钮（拦截 ${intercepted} 次，url=${workerPage.url()}）`);
   }
-  if (await workerPage.getByPlaceholder("账号").count()) throw new Error("临时错误不应回到登录页");
+  await workerPage.unroute("**/api/bootstrap", failBootstrap);
   await workerPage.getByRole("button", { name: "重试" }).click();
   await workerPage.locator(".portal-switch-name", { hasText: "第二门户" }).waitFor();
   if (await workerPage.getByPlaceholder("账号").count()) throw new Error("重试后不应要求重新登录");
+});
+
+await step("设置页有未保存改动时切换门户 / 进入门户管理会先确认；取消后留在原页且输入保留", async () => {
+  await page.goto(`${BASE_URL}/#/p/default/dashboard/settings`);
+  await page.getByRole("heading", { name: "设置", exact: true }).first().waitFor();
+  const shopName = page.getByPlaceholder("店铺名称").first();
+  await shopName.fill("未保存的店名");
+  let dialogs = 0;
+  const onDialog = (dialog) => { dialogs += 1; dialog.dismiss(); };
+  page.off("dialog", page.listeners("dialog")[0]);
+  page.on("dialog", onDialog);
+  await page.getByRole("button", { name: "打开门户管理" }).click();
+  await page.waitForTimeout(800);
+  if (dialogs !== 1) throw new Error(`应弹出一次未保存确认，实际 ${dialogs}`);
+  if (!page.url().includes("/dashboard/settings")) throw new Error(`取消后应留在设置页：${page.url()}`);
+  if ((await shopName.inputValue()) !== "未保存的店名") throw new Error("取消后输入应保留");
+  await page.locator(".portal-switch-button").click();
+  await page.waitForTimeout(800);
+  if (dialogs !== 2) throw new Error(`切换门户也应确认，实际 ${dialogs}`);
+  page.off("dialog", onDialog);
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "打开门户管理" }).click();
+  await page.getByRole("heading", { name: "门户管理", exact: true }).waitFor();
 });
 
 await step("窄屏：门户选择页与门户管理页无需横向滚动", async () => {

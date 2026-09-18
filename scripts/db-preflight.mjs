@@ -6,6 +6,7 @@
 //    同时检查悬空的保修来源引用；任一不满足即非零退出，不进入结构迁移。
 // 4. 已执行多门户迁移：只报告状态。
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PrismaClient, Prisma } from "@prisma/client";
@@ -23,26 +24,40 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-// 初始迁移建立的表与列（名称集合），用于判断“旧库结构是否完整”。
-const INIT_COLUMNS = {
-  Staff: ["id", "name", "username", "email", "passwordHash", "isAdmin", "pagePermissions", "sessionTokenHash", "sessionExpiresAt", "createdAt", "updatedAt"],
-  StaffSession: ["id", "staffId", "tokenHash", "expiresAt", "createdAt", "updatedAt"],
-  Client: ["id", "name", "docType", "identity", "email", "phone", "address", "comment", "level", "createdAt", "updatedAt"],
-  Brand: ["id", "name", "sortOrder", "createdAt", "updatedAt"],
-  Model: ["id", "brandId", "name", "sortOrder", "createdAt", "updatedAt"],
-  Service: ["id", "defaultName", "category", "zh", "es", "price", "sortOrder", "createdAt", "updatedAt"],
-  Part: ["id", "defaultName", "category", "zh", "es", "price", "sortOrder", "createdAt", "updatedAt"],
-  Technician: ["id", "name", "phone", "email", "color", "active", "sortOrder", "createdAt", "updatedAt"],
-  AttributeGroup: ["id", "name", "createdAt", "updatedAt"],
-  Attribute: ["id", "groupId", "defaultName", "zh", "es", "sortOrder", "createdAt", "updatedAt"],
-  Repair: ["id", "ticket", "clientId", "brand", "model", "properties", "imei", "issue", "internalNote", "passwordType", "passwordText", "passwordPattern", "status", "repairTime", "warrantyStart", "technicianId", "technicianName", "budget", "deposit", "paymentMethod", "discountAmount", "costAmount", "frontPhoto", "backPhoto", "signatureDataUrl", "signedAt", "publicToken", "orderType", "sourceRepairId", "warrantyReason", "warrantyDiagnosis", "warrantyResolution", "warrantyChargeable", "statusHistory", "notificationLog", "searchText", "ticketSort", "createdAt", "updatedAt"],
-  RepairItem: ["id", "repairId", "name", "qty", "price", "cost", "createdAt", "updatedAt"],
-  Payment: ["id", "repairId", "amount", "method", "note", "paidAt", "createdBy", "createdAt", "updatedAt"],
-  Setting: ["id", "value", "updatedAt"],
-  BackupSnapshot: ["id", "kind", "reason", "data", "counts", "createdBy", "createdAt"]
-};
-const INIT_INDEXES = ["Staff_username_key", "StaffSession_tokenHash_key", "Brand_name_key", "Technician_name_key", "AttributeGroup_name_key", "Repair_ticket_key", "Repair_publicToken_key", "Repair_searchText_idx"];
-const INIT_FOREIGN_KEYS = ["StaffSession_staffId_fkey", "Model_brandId_fkey", "Attribute_groupId_fkey", "Repair_clientId_fkey", "RepairItem_repairId_fkey", "Payment_repairId_fkey"];
+// 期望结构直接从初始迁移 SQL 解析（每张表每列的类型 / 可空 / 默认值存在性、全部索引名、全部外键名），
+// 与 information_schema 逐项比对；任何一项不一致都拒绝标记基线，避免多门户迁移执行到一半才因缺索引 / 类型不符失败。
+const INIT_SQL = fs.readFileSync(path.join(root, "prisma/migrations", INIT_MIGRATION, "migration.sql"), "utf8");
+const EXPECTED = parseInitMigration(INIT_SQL);
+
+function normalizeType(raw) {
+  let type = String(raw || "").toLowerCase().replace(/\s+/g, "");
+  if (type === "boolean") return "tinyint(1)";
+  if (type === "integer") return "int";
+  type = type.replace(/^(int|bigint|smallint|mediumint)\(\d+\)$/, "$1");
+  return type;
+}
+
+function parseInitMigration(sql) {
+  const tables = {};
+  const indexes = new Set();
+  const foreignKeys = new Set();
+  for (const match of sql.matchAll(/CREATE TABLE `(\w+)` \(([\s\S]*?)\n\)/g)) {
+    const [, table, body] = match;
+    tables[table] = {};
+    for (const line of body.split("\n").map((item) => item.trim()).filter(Boolean)) {
+      const column = line.match(/^`(\w+)` ([A-Z]+(?:\([^)]*\))?)(.*)$/);
+      if (column) {
+        const [, name, type, rest] = column;
+        tables[table][name] = { type: normalizeType(type), nullable: !/NOT NULL/.test(rest) };
+        continue;
+      }
+      const index = line.match(/^(?:UNIQUE |FULLTEXT )?INDEX `(\w+)`/);
+      if (index) indexes.add(index[1]);
+    }
+  }
+  for (const match of sql.matchAll(/ADD CONSTRAINT `(\w+)` FOREIGN KEY/g)) foreignKeys.add(match[1]);
+  return { tables, indexes, foreignKeys };
+}
 
 const prisma = new PrismaClient();
 let exitCode = 0;
@@ -63,7 +78,15 @@ try {
       if (!exitCode) exitCode = await checkUpgradePreconditions();
     }
   } else if (!(await migrationApplied(PORTAL_MIGRATION))) {
-    exitCode = await checkUpgradePreconditions();
+    // 基线可能曾被旧脚本盲标：多门户结构迁移前同样做完整结构比对
+    const diff = await compareInitStructure();
+    if (diff.length) {
+      console.error("✗ 预检：旧库结构与初始迁移不一致，多门户迁移会执行到一半失败，已停止：\n  - " + diff.join("\n  - "));
+      exitCode = 1;
+    } else {
+      console.log("✓ 预检：旧库结构与初始迁移完全一致。");
+      exitCode = await checkUpgradePreconditions();
+    }
   } else {
     console.log("✓ 预检：多门户迁移已执行。");
   }
@@ -102,22 +125,40 @@ async function migrationApplied(name) {
   return Number(rows?.[0]?.count || 0) > 0;
 }
 
+async function listColumnDetails(table) {
+  const rows = await prisma.$queryRaw`SELECT column_name AS name, column_type AS type, is_nullable AS nullable FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ${table}`;
+  return new Map(rows.map((row) => [String(row.name), { type: normalizeType(row.type), nullable: String(row.nullable).toUpperCase() === "YES" }]));
+}
+
 async function compareInitStructure() {
   const diff = [];
   const tables = await listTables();
-  for (const [table, expected] of Object.entries(INIT_COLUMNS)) {
+  for (const [table, expectedColumns] of Object.entries(EXPECTED.tables)) {
     if (!tables.includes(table)) {
       diff.push(`缺少表 ${table}`);
       continue;
     }
-    const actual = await listColumns(table);
-    for (const column of expected) if (!actual.includes(column)) diff.push(`表 ${table} 缺少列 ${column}`);
-    for (const column of actual) if (!expected.includes(column)) diff.push(`表 ${table} 多出列 ${column}`);
+    const actual = await listColumnDetails(table);
+    for (const [column, expected] of Object.entries(expectedColumns)) {
+      const found = actual.get(column);
+      if (!found) {
+        diff.push(`表 ${table} 缺少列 ${column}`);
+        continue;
+      }
+      if (found.type !== expected.type) diff.push(`表 ${table} 列 ${column} 类型 ${found.type} ≠ 预期 ${expected.type}`);
+      if (found.nullable !== expected.nullable) diff.push(`表 ${table} 列 ${column} 可空性与预期不一致`);
+    }
+    for (const column of actual.keys()) if (!expectedColumns[column]) diff.push(`表 ${table} 多出列 ${column}`);
   }
   const indexes = await listIndexNames();
-  for (const name of INIT_INDEXES) if (!indexes.includes(name)) diff.push(`缺少索引 ${name}`);
+  for (const name of EXPECTED.indexes) if (!indexes.includes(name)) diff.push(`缺少索引 ${name}`);
   const foreignKeys = await listForeignKeys();
-  for (const name of INIT_FOREIGN_KEYS) if (!foreignKeys.includes(name)) diff.push(`缺少外键 ${name}`);
+  for (const name of EXPECTED.foreignKeys) if (!foreignKeys.includes(name)) diff.push(`缺少外键 ${name}`);
+  for (const table of Object.keys(EXPECTED.tables)) {
+    if (!tables.includes(table)) continue;
+    const pk = await prisma.$queryRaw`SELECT COUNT(*) AS c FROM information_schema.table_constraints WHERE table_schema = DATABASE() AND table_name = ${table} AND constraint_type = 'PRIMARY KEY'`;
+    if (!Number(pk[0]?.c)) diff.push(`表 ${table} 缺少主键`);
+  }
   return diff;
 }
 

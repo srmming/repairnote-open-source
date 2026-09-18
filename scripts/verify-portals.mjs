@@ -100,6 +100,13 @@ function makeClient(name) {
   };
 }
 
+
+// 员工写接口必须带读取时的门户版本：这里在每次调用前读取最新 revision（并发用例除外，见 A12b）。
+async function staffWrite(client, method, body, portal) {
+  const boot = await client.get("/api/bootstrap", portal);
+  return client.json(method, "/api/staff", { ...body, expectedRevision: boot.json._revision }, portal);
+}
+
 // ---------- 夹具 ----------
 const FIX = {};
 async function resetDatabase() {
@@ -616,11 +623,11 @@ try {
 
   await check("A08", "A 管理员新增员工（同事务加入当前门户）；重用已有用户名 409 且不认领", async () => {
     const before = await identityDigest();
-    const r = await aAdmin.json("POST", "/api/staff", { name: "新员工", username: "a-new", email: "", password: "New-Pass-1234", isAdmin: false, pagePermissions: ["clients"] }, "default");
+    const r = await staffWrite(aAdmin, "POST", { name: "新员工", username: "a-new", email: "", password: "New-Pass-1234", isAdmin: false, pagePermissions: ["clients"] }, "default");
     assert(r.status === 200 && r.json.user.username === "a-new", `${r.status} ${r.text}`);
     const member = await prisma.portalMember.findFirst({ where: { staffId: r.json.user.id } });
     assert(member?.portalId === "default", "同事务加入当前门户");
-    const dup = await aAdmin.json("POST", "/api/staff", { name: "冒充", username: "b-admin", email: "", password: "Another-1234", isAdmin: true, pagePermissions: [] }, "default");
+    const dup = await staffWrite(aAdmin, "POST", { name: "冒充", username: "b-admin", email: "", password: "Another-1234", isAdmin: true, pagePermissions: [] }, "default");
     assert(dup.status === 409 && dup.json.code === "USERNAME_TAKEN", `重名 ${dup.status} ${dup.text}`);
     const bAdminRow = await prisma.staff.findUnique({ where: { id: "b-admin" } });
     assert(bAdminRow && (await prisma.portalMember.count({ where: { staffId: "b-admin", portalId: "default" } })) === 0, "不认领、不加入");
@@ -632,22 +639,22 @@ try {
 
   await check("A09/G23", "A 门店管理员改 / 删 B-only 员工被拒；写 isSystemAdmin 拒绝；修改系统主管理账号 / 共享账号全局身份被拒", async () => {
     const before = await identityDigest();
-    const r1 = await aAdmin.json("POST", "/api/staff", { id: "b-admin", name: "hijack", username: "b-admin", email: "", isAdmin: false, pagePermissions: [] }, "default");
+    const r1 = await staffWrite(aAdmin, "POST", { id: "b-admin", name: "hijack", username: "b-admin", email: "", isAdmin: false, pagePermissions: [] }, "default");
     assert(r1.status === 404, `改 B 员工 ${r1.status}`);
-    const r2 = await aAdmin.json("DELETE", "/api/staff", { id: "b-admin" }, "default");
+    const r2 = await staffWrite(aAdmin, "DELETE", { id: "b-admin" }, "default");
     assert(r2.status === 404, `删 B 员工 ${r2.status}`);
-    const r3 = await aAdmin.json("POST", "/api/staff", { id: "a-repairs", name: "x", username: "a-repairs", email: "", isAdmin: false, pagePermissions: [], isSystemAdmin: true }, "default");
+    const r3 = await staffWrite(aAdmin, "POST", { id: "a-repairs", name: "x", username: "a-repairs", email: "", isAdmin: false, pagePermissions: [], isSystemAdmin: true }, "default");
     assert(r3.status === 400, `isSystemAdmin ${r3.status}`);
     // 系统主管理账号 sys1 只属于 default：门店管理员不得改其密码 / 用户名
-    const r4 = await aAdmin.json("POST", "/api/staff", { id: "sys1", name: "系统主管理员", username: "sysadmin", email: "", password: "Hijack-Pass-1", isAdmin: true, pagePermissions: [] }, "default");
+    const r4 = await staffWrite(aAdmin, "POST", { id: "sys1", name: "系统主管理员", username: "sysadmin", email: "", password: "Hijack-Pass-1", isAdmin: true, pagePermissions: [] }, "default");
     assert(r4.status === 403 && r4.json.code === "IDENTITY_PROTECTED", `改系统账号密码 ${r4.status} ${r4.text}`);
-    const r5 = await aAdmin.json("POST", "/api/staff", { id: "sys1", name: "系统主管理员", username: "stolen", email: "", isAdmin: true, pagePermissions: [] }, "default");
+    const r5 = await staffWrite(aAdmin, "POST", { id: "sys1", name: "系统主管理员", username: "stolen", email: "", isAdmin: true, pagePermissions: [] }, "default");
     assert(r5.status === 403, `改系统账号用户名 ${r5.status}`);
     // 共享账号 ab-staff（default + B）：A 管理员不得改其全局密码
-    const r6 = await aAdmin.json("POST", "/api/staff", { id: "ab-staff", name: "ab-staff", username: "ab-staff", email: "", password: "Hijack-Pass-2", isAdmin: false, pagePermissions: ["repairs"] }, "default");
+    const r6 = await staffWrite(aAdmin, "POST", { id: "ab-staff", name: "ab-staff", username: "ab-staff", email: "", password: "Hijack-Pass-2", isAdmin: false, pagePermissions: ["repairs"] }, "default");
     assert(r6.status === 403, `改共享账号密码 ${r6.status}`);
     // 但可以只改共享账号在本门户的权限
-    const r7 = await aAdmin.json("POST", "/api/staff", { id: "ab-staff", name: "ab-staff", username: "ab-staff", email: "ab-staff@test.local", isAdmin: false, pagePermissions: ["repairs"] }, "default");
+    const r7 = await staffWrite(aAdmin, "POST", { id: "ab-staff", name: "ab-staff", username: "ab-staff", email: "ab-staff@test.local", isAdmin: false, pagePermissions: ["repairs"] }, "default");
     assert(r7.status === 200 && r7.json.user.pagePermissions.join(",") === "repairs", `改本门户权限 ${r7.status} ${r7.text}`);
     const bMember = await prisma.portalMember.findUnique({ where: { staffId_portalId: { staffId: "ab-staff", portalId: shopB.id } } });
     assert(bMember.pagePermissions.join(",") === "repairs", "B 门户权限不受影响");
@@ -657,7 +664,7 @@ try {
     const sysRow = await prisma.staff.findUnique({ where: { id: "sys1" } });
     assert(sysRow.username === "sysadmin" && sysRow.isSystemAdmin, "系统账号未被修改");
     // 普通单店非系统账号仍可编辑（含改密码）
-    const r8 = await aAdmin.json("POST", "/api/staff", { id: "a-repairs", name: "A 维修员", username: "a-repairs", email: "", password: "Rotated-Pass-1", isAdmin: false, pagePermissions: ["repairs"] }, "default");
+    const r8 = await staffWrite(aAdmin, "POST", { id: "a-repairs", name: "A 维修员", username: "a-repairs", email: "", password: "Rotated-Pass-1", isAdmin: false, pagePermissions: ["repairs"] }, "default");
     assert(r8.status === 200 && r8.json.passwordChanged === true, `单店账号编辑 ${r8.status} ${r8.text}`);
     return "身份保护有效";
   });
@@ -667,7 +674,7 @@ try {
     const s2 = makeClient("a-cat-2");
     await s1.login("a-categories");
     await s2.login("a-categories");
-    const r = await aAdmin.json("POST", "/api/staff", { id: "a-categories", name: "a-categories", username: "a-categories", email: "", password: "Changed-Pass-9", isAdmin: false, pagePermissions: ["categories"] }, "default");
+    const r = await staffWrite(aAdmin, "POST", { id: "a-categories", name: "a-categories", username: "a-categories", email: "", password: "Changed-Pass-9", isAdmin: false, pagePermissions: ["categories"] }, "default");
     assert(r.status === 200, r.text);
     const me1 = await s1.get("/api/auth/me");
     const me2 = await s2.get("/api/auth/me");
@@ -685,7 +692,7 @@ try {
     const abStaff = makeClient("ab-staff");
     await abStaff.login("ab-staff");
     assert((await abStaff.get("/api/bootstrap", "default")).status === 200, "移出前 A 可用");
-    const r = await aAdmin.json("DELETE", "/api/staff", { id: "ab-staff" }, "default");
+    const r = await staffWrite(aAdmin, "DELETE", { id: "ab-staff" }, "default");
     assert(r.status === 200, `移出 ${r.status} ${r.text}`);
     const a = await abStaff.get("/api/bootstrap", "default");
     assert(a.status === 403 && a.json.code === "PORTAL_ACCESS_DENIED", `移出后 A ${a.status}`);
@@ -697,6 +704,46 @@ try {
     return "移出只影响 A";
   });
 
+  await check("A12b", "员工写入缺失 / 过期版本：400 / 409；两位管理员基于同一版本编辑同一员工只有一个成功", async () => {
+    const r1 = await aAdmin.json("POST", "/api/staff", { id: "a-repairs", name: "A 维修员", username: "a-repairs", email: "", isAdmin: false, pagePermissions: ["repairs"] }, "default");
+    assert(r1.status === 400 && r1.json.code === "REVISION_REQUIRED", `缺失版本 ${r1.status} ${r1.text}`);
+    const r2 = await aAdmin.json("POST", "/api/staff", { id: "a-repairs", name: "A 维修员", username: "a-repairs", email: "", isAdmin: false, pagePermissions: ["repairs"], expectedRevision: "1" }, "default");
+    assert(r2.status === 409 && r2.json.code === "VERSION_CONFLICT", `过期版本 ${r2.status}`);
+    const d1 = await aAdmin.json("DELETE", "/api/staff", { id: "a-repairs" }, "default");
+    assert(d1.status === 400, `移出缺失版本 ${d1.status}`);
+    const other = makeClient("ab-admin-staff");
+    await other.login("ab-admin");
+    await prisma.portalMember.update({ where: { staffId_portalId: { staffId: "ab-admin", portalId: "default" } }, data: { isAdmin: true, pagePermissions: PAGE_KEYS } });
+    const rev = (await aAdmin.get("/api/bootstrap", "default")).json._revision;
+    const [e1, e2] = await Promise.all([
+      aAdmin.json("POST", "/api/staff", { id: "a-modules", name: "a-modules", username: "a-modules", email: "", isAdmin: false, pagePermissions: ["modules", "clients"], expectedRevision: rev }, "default"),
+      other.json("POST", "/api/staff", { id: "a-modules", name: "a-modules", username: "a-modules", email: "", isAdmin: false, pagePermissions: [], expectedRevision: rev }, "default")
+    ]);
+    const statuses = [e1.status, e2.status].sort().join(",");
+    assert(statuses === "200,409", `同版本并发编辑 ${statuses}`);
+    const winner = e1.status === 200 ? e1 : e2;
+    const member = await prisma.portalMember.findUnique({ where: { staffId_portalId: { staffId: "a-modules", portalId: "default" } } });
+    assert(JSON.stringify(member.pagePermissions) === JSON.stringify(winner.json.user.pagePermissions), "数据库应等于成功方");
+    await prisma.portalMember.update({ where: { staffId_portalId: { staffId: "a-modules", portalId: "default" } }, data: { pagePermissions: ["modules"] } });
+    return "版本检查覆盖员工写入";
+  });
+
+  await check("D03b", "员工移出门户后：编辑其历史订单（技师不变）仍可保存；把订单改派给已移出员工被拒", async () => {
+    await addMember("a-services", shopB.id, false, ["repairs"]);
+    const repairId = `hist-${Date.now()}`;
+    const created = await bAdmin.json("PUT", `/api/repairs/${repairId}`, { createOnly: true, repair: { ticket: `H${Date.now()}`, clientId: FIX.B.clientId, status: "预定", technicianId: "staff_a-services", technicianName: "a-services", items: [], payments: [] } }, shopB.id);
+    assert(created.status === 200, `建单 ${created.status} ${created.text}`);
+    await prisma.portalMember.delete({ where: { staffId_portalId: { staffId: "a-services", portalId: shopB.id } } });
+    const edit = await bAdmin.json("PUT", `/api/repairs/${repairId}`, { repair: { ...created.json.repair, internalNote: "after removal" } }, shopB.id);
+    assert(edit.status === 200 && edit.json.repair.technicianId === "staff_a-services", `移出后编辑 ${edit.status} ${edit.text.slice(0, 120)}`);
+    const status = await bAdmin.json("PUT", `/api/repairs/${repairId}`, { repair: { ...edit.json.repair, status: "维修中" } }, shopB.id);
+    assert(status.status === 200, `移出后改状态 ${status.status}`);
+    const other = await bAdmin.json("PUT", `/api/repairs/${FIX.B.repairId}`, { repair: { ...(await bAdmin.get(`/api/repairs/${FIX.B.repairId}`, shopB.id)).json.repair, technicianId: "staff_a-services" } }, shopB.id);
+    assert(other.status === 400 && other.json.code === "INVALID_REFERENCE", `改派给已移出员工 ${other.status}`);
+    await bAdmin.json("DELETE", `/api/repairs/${repairId}`, { updatedAt: status.json.repair.updatedAt }, shopB.id);
+    return "历史归属保留、新指派受限";
+  });
+
   await check("A12", "同门户两名管理员并发互相降级：至少一位保留", async () => {
     await prisma.portalMember.update({ where: { staffId_portalId: { staffId: "ab-admin", portalId: "default" } }, data: { isAdmin: true, pagePermissions: PAGE_KEYS } });
     const abClient = makeClient("ab-admin-2");
@@ -705,9 +752,10 @@ try {
     await prisma.portalMember.update({ where: { staffId_portalId: { staffId: "sys1", portalId: "default" } }, data: { isAdmin: false, pagePermissions: PAGE_KEYS } });
     for (let round = 0; round < 3; round += 1) {
       await prisma.portalMember.updateMany({ where: { portalId: "default", staffId: { in: ["a-admin", "ab-admin"] } }, data: { isAdmin: true, pagePermissions: PAGE_KEYS } });
+      const rev = (await aAdmin.get("/api/bootstrap", "default")).json._revision;
       const [r1, r2] = await Promise.all([
-        aAdmin.json("POST", "/api/staff", { id: "ab-admin", name: "ab-admin", username: "ab-admin", email: "ab-admin@test.local", isAdmin: false, pagePermissions: ["repairs"] }, "default"),
-        abClient.json("POST", "/api/staff", { id: "a-admin", name: "a-admin", username: "a-admin", email: "a-admin@test.local", isAdmin: false, pagePermissions: ["repairs"] }, "default")
+        aAdmin.json("POST", "/api/staff", { id: "ab-admin", name: "ab-admin", username: "ab-admin", email: "ab-admin@test.local", isAdmin: false, pagePermissions: ["repairs"], expectedRevision: rev }, "default"),
+        abClient.json("POST", "/api/staff", { id: "a-admin", name: "a-admin", username: "a-admin", email: "a-admin@test.local", isAdmin: false, pagePermissions: ["repairs"], expectedRevision: rev }, "default")
       ]);
       const admins = await prisma.portalMember.count({ where: { portalId: "default", isAdmin: true } });
       assert(admins >= 1, `第 ${round + 1} 轮后管理员数 ${admins}`);
@@ -1030,7 +1078,7 @@ try {
     // 快照后改设置、加账号、改权限、改门户名，再恢复
     const boot = await aAdmin.get("/api/bootstrap", "default");
     await aAdmin.json("POST", "/api/settings", { settings: { shopName: "改动后的名字" }, expectedRevision: boot.json._revision }, "default");
-    await aAdmin.json("POST", "/api/staff", { name: "恢复前新账号", username: "after-snapshot", email: "", password: "After-Pass-1234", isAdmin: false, pagePermissions: ["clients"] }, "default");
+    await staffWrite(aAdmin, "POST", { name: "恢复前新账号", username: "after-snapshot", email: "", password: "After-Pass-1234", isAdmin: false, pagePermissions: ["clients"] }, "default");
     await sys.sys("PATCH", `/api/system/portals/default`, { expectedRevision: (await sys.get("/api/system/portals?pageSize=100")).json.portals.find((p) => p.id === "default").revision, name: "A 改名后" });
     const identityBefore = await identityDigest();
     const portalMetaBefore = await prisma.portal.findUnique({ where: { id: "default" } });

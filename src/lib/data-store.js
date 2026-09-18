@@ -120,9 +120,19 @@ export async function listPortalUsers(ctx, db = prisma) {
 }
 
 // 轻量引导：只返回当前门户的目录 / 技师 / 设置 / 成员等小数据；维修单与客户不整包下发。
+// 业务数据与其 revision 必须来自同一个一致性快照：没有传 db（事务）时，整段读取放进一个只读事务
+// （MySQL REPEATABLE READ 在首次读取建立快照），避免“旧数据 + 新版本号”导致后续整组保存覆盖别人的修改。
 export async function getBootstrapData(ctx, options = {}) {
+  requireCtx(ctx);
+  if (!options.db) {
+    return prisma.$transaction((tx) => readBootstrapData(ctx, { ...options, db: tx }), { timeout: options.timeout || 60000 });
+  }
+  return readBootstrapData(ctx, options);
+}
+
+async function readBootstrapData(ctx, options = {}) {
   const portalId = requireCtx(ctx);
-  const db = options.db || prisma;
+  const db = options.db;
   const includeRepairs = options.includeRepairs === true;
   const includeClients = options.includeClients === true;
   const includeRepairItems = options.includeRepairItems === true;
@@ -777,7 +787,10 @@ export async function saveRepairRecord(ctx, { repair, client, createOnly = false
     if (!repairData.clientId) throw badRequest("维修单缺少客户");
     const searchClient = savedClient?.id === repairData.clientId ? savedClient : await tx.client.findFirst({ where: { id: repairData.clientId, portalId } });
     if (!searchClient) throw notFound("没有找到客户", "CLIENT_NOT_FOUND");
-    await assertTechnicianReference(ctx, tx, repairData.technicianId);
+    // 技师引用只在新建或技师发生变化时校验：已有订单保留历史技师归属（含已移出门户的员工），只改备注 / 状态不受影响。
+    if (!existing || String(repairData.technicianId || "") !== String(existing.technicianId || "")) {
+      await assertTechnicianReference(ctx, tx, repairData.technicianId);
+    }
     const repairItems = repair.itemsLoaded === false && existing ? existing.items : (Array.isArray(repair.items) ? repair.items : []);
     const paymentCreates = repairPaymentsForSave(repairData, existing?.payments || []);
     let sourceTicket = "";

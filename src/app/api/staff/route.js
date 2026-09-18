@@ -1,7 +1,7 @@
 import { hashPassword, normalizedPagePermissions, PAGE_PERMISSION_KEYS, parsePagePermissions, revokeStaffSessions, validateEmail, validatePassword, validatePersonName, validateUsername } from "@/lib/auth";
 import { badRequest, conflict, errorResponse, forbidden, notFound, readJsonBody, requestIdOf } from "@/lib/api-errors";
 import { assertNoPortalOverride, portalJson, requirePortalContext } from "@/lib/portal-context";
-import { withPortalWrite } from "@/lib/portal-write";
+import { parseExpectedRevision, withPortalWrite } from "@/lib/portal-write";
 import { listPortalUsers } from "@/lib/data-store";
 import { serializeMemberUser } from "@/lib/portal-store";
 import { securityLog } from "@/lib/system-admin";
@@ -42,7 +42,9 @@ export async function POST(request) {
     const pagePermissions = isAdmin ? [...PAGE_PERMISSION_KEYS] : parsePagePermissions(body.pagePermissions, throwBad);
     const password = body.password === undefined || body.password === null || body.password === "" ? "" : validatePassword(body.password, throwBad);
 
-    const { result, revision } = await withPortalWrite(ctx, { staffIds: staffId ? [staffId] : [], expectedRevision: body.expectedRevision }, async (tx, { lockedStaff }) => {
+    // 员工新建 / 改权 / 改身份都必须带读取时的门户版本：缺失 400、过期 409，避免两位管理员的旧表单互相覆盖。
+    const expectedRevision = parseExpectedRevision(body.expectedRevision);
+    const { result, revision } = await withPortalWrite(ctx, { staffIds: staffId ? [staffId] : [], expectedRevision }, async (tx, { lockedStaff }) => {
       if (!staffId) {
         const name = validatePersonName(body.name, throwBad);
         const username = validateUsername(body.username, throwBad);
@@ -120,7 +122,8 @@ export async function DELETE(request) {
     if (!staffId) throw badRequest("缺少员工");
     if (staffId === ctx.staff.id) throw badRequest("当前登录账号不可移出，请由其他管理员操作");
 
-    const { revision } = await withPortalWrite(ctx, { staffIds: [staffId], expectedRevision: body.expectedRevision }, async (tx) => {
+    const expectedRevision = parseExpectedRevision(body.expectedRevision);
+    const { revision } = await withPortalWrite(ctx, { staffIds: [staffId], expectedRevision }, async (tx) => {
       const member = await tx.portalMember.findUnique({ where: { staffId_portalId: { staffId, portalId: ctx.portalId } } });
       if (!member) throw notFound("没有找到员工", "STAFF_NOT_FOUND");
       if (member.isAdmin) {
