@@ -26,6 +26,8 @@ export function serializeMemberUser(staff, member) {
     username: staff.username,
     email: staff.email,
     isAdmin: Boolean(member?.isAdmin),
-    pagePermissions: normalizedPagePermissions(member)
+    pagePermissions: normalizedPagePermissions(member),
+    // 成员记录自己的版本：员工改权 / 移出用它做并发校验，不依赖会被其他业务推进的门户 revision
+    updatedAt: member?.updatedAt?.toISOString?.() || member?.updatedAt || ""
   };
 }

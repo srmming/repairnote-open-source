@@ -101,8 +101,13 @@ function makeClient(name) {
 }
 
 
-// 员工写接口必须带读取时的门户版本：这里在每次调用前读取最新 revision（并发用例除外，见 A12b）。
+// 员工写接口：新建带读取时的门户版本；已有成员的修改 / 移出带该成员记录读取时的 updatedAt（并发用例除外，见 A12b/A12c）。
+async function memberUpdatedAt(client, portal, staffId) {
+  const users = await client.get("/api/staff", portal);
+  return users.json.find((user) => user.id === staffId)?.updatedAt || "";
+}
 async function staffWrite(client, method, body, portal) {
+  if (body.id) return client.json(method, "/api/staff", { ...body, updatedAt: await memberUpdatedAt(client, portal, body.id) }, portal);
   const boot = await client.get("/api/bootstrap", portal);
   return client.json(method, "/api/staff", { ...body, expectedRevision: boot.json._revision }, portal);
 }
@@ -704,28 +709,59 @@ try {
     return "移出只影响 A";
   });
 
-  await check("A12b", "员工写入缺失 / 过期版本：400 / 409；两位管理员基于同一版本编辑同一员工只有一个成功", async () => {
+  await check("A12b", "员工修改 / 移出缺失或非法 updatedAt 400、过期 409；两位管理员基于同一版本编辑同一员工只有一个成功", async () => {
     const r1 = await aAdmin.json("POST", "/api/staff", { id: "a-repairs", name: "A 维修员", username: "a-repairs", email: "", isAdmin: false, pagePermissions: ["repairs"] }, "default");
-    assert(r1.status === 400 && r1.json.code === "REVISION_REQUIRED", `缺失版本 ${r1.status} ${r1.text}`);
-    const r2 = await aAdmin.json("POST", "/api/staff", { id: "a-repairs", name: "A 维修员", username: "a-repairs", email: "", isAdmin: false, pagePermissions: ["repairs"], expectedRevision: "1" }, "default");
+    assert(r1.status === 400 && r1.json.code === "VERSION_REQUIRED", `缺失版本 ${r1.status} ${r1.text}`);
+    const r2 = await aAdmin.json("POST", "/api/staff", { id: "a-repairs", name: "A 维修员", username: "a-repairs", email: "", isAdmin: false, pagePermissions: ["repairs"], updatedAt: "2020-01-01T00:00:00.000Z" }, "default");
     assert(r2.status === 409 && r2.json.code === "VERSION_CONFLICT", `过期版本 ${r2.status}`);
+    const r3 = await aAdmin.json("POST", "/api/staff", { id: "a-repairs", name: "A 维修员", username: "a-repairs", email: "", isAdmin: false, pagePermissions: ["repairs"], updatedAt: "not-a-date" }, "default");
+    assert(r3.status === 400 && r3.json.code === "INVALID_VERSION", `非法版本 ${r3.status}`);
     const d1 = await aAdmin.json("DELETE", "/api/staff", { id: "a-repairs" }, "default");
     assert(d1.status === 400, `移出缺失版本 ${d1.status}`);
+    const newMissing = await aAdmin.json("POST", "/api/staff", { name: "x", username: `nv-${Date.now()}`, email: "", password: "New-Pass-1234", isAdmin: false, pagePermissions: [] }, "default");
+    assert(newMissing.status === 400 && newMissing.json.code === "REVISION_REQUIRED", `新建缺门户版本 ${newMissing.status}`);
     const other = makeClient("ab-admin-staff");
     await other.login("ab-admin");
     await prisma.portalMember.update({ where: { staffId_portalId: { staffId: "ab-admin", portalId: "default" } }, data: { isAdmin: true, pagePermissions: PAGE_KEYS } });
-    const rev = (await aAdmin.get("/api/bootstrap", "default")).json._revision;
+    const at = await memberUpdatedAt(aAdmin, "default", "a-modules");
     const [e1, e2] = await Promise.all([
-      aAdmin.json("POST", "/api/staff", { id: "a-modules", name: "a-modules", username: "a-modules", email: "", isAdmin: false, pagePermissions: ["modules", "clients"], expectedRevision: rev }, "default"),
-      other.json("POST", "/api/staff", { id: "a-modules", name: "a-modules", username: "a-modules", email: "", isAdmin: false, pagePermissions: [], expectedRevision: rev }, "default")
+      aAdmin.json("POST", "/api/staff", { id: "a-modules", name: "a-modules", username: "a-modules", email: "", isAdmin: false, pagePermissions: ["modules", "clients"], updatedAt: at }, "default"),
+      other.json("POST", "/api/staff", { id: "a-modules", name: "a-modules", username: "a-modules", email: "", isAdmin: false, pagePermissions: [], updatedAt: at }, "default")
     ]);
     const statuses = [e1.status, e2.status].sort().join(",");
     assert(statuses === "200,409", `同版本并发编辑 ${statuses}`);
     const winner = e1.status === 200 ? e1 : e2;
     const member = await prisma.portalMember.findUnique({ where: { staffId_portalId: { staffId: "a-modules", portalId: "default" } } });
     assert(JSON.stringify(member.pagePermissions) === JSON.stringify(winner.json.user.pagePermissions), "数据库应等于成功方");
+    assert(new Date(winner.json.user.updatedAt).getTime() > new Date(at).getTime(), "成员版本应递增");
     await prisma.portalMember.update({ where: { staffId_portalId: { staffId: "a-modules", portalId: "default" } }, data: { pagePermissions: ["modules"] } });
-    return "版本检查覆盖员工写入";
+    return "员工版本绑定成员记录";
+  });
+
+  await check("A12c", "撤销权限后：旧页面即使拿到更新的门户版本，提交旧员工数据也被拒，不会恢复已撤销的权限", async () => {
+    await prisma.portalMember.update({ where: { staffId_portalId: { staffId: "a-categories", portalId: "default" } }, data: { isAdmin: false, pagePermissions: ["categories", "finance"] } });
+    const other = makeClient("ab-admin-revoke");
+    await other.login("ab-admin");
+    // A 读到员工列表（含 finance 权限）
+    const staleUser = (await aAdmin.get("/api/staff", "default")).json.find((user) => user.id === "a-categories");
+    assert(staleUser.pagePermissions.includes("finance"), "前置：应含 finance");
+    // B 撤销 finance
+    const revoke = await staffWrite(other, "POST", { id: "a-categories", name: staleUser.name, username: staleUser.username, email: staleUser.email, isAdmin: false, pagePermissions: ["categories"] }, "default");
+    assert(revoke.status === 200, `撤销 ${revoke.status} ${revoke.text}`);
+    // A 保存一个无关客户，门户版本推进
+    const clientSave = await aAdmin.json("POST", "/api/clients", { name: "版本推进客户", phone: `6${Date.now()}`.slice(0, 9), createOnly: true }, "default");
+    assert(clientSave.status === 200, `客户保存 ${clientSave.status}`);
+    const latestRevision = clientSave.json._revision;
+    // A 用旧员工数据 + 最新门户版本 + 旧成员 updatedAt 提交（模拟旧页面）
+    const stale = await aAdmin.json("POST", "/api/staff", { id: "a-categories", name: staleUser.name, username: staleUser.username, email: staleUser.email, isAdmin: false, pagePermissions: staleUser.pagePermissions, updatedAt: staleUser.updatedAt, expectedRevision: latestRevision }, "default");
+    assert(stale.status === 409 && stale.json.code === "VERSION_CONFLICT", `旧员工数据应 409，实际 ${stale.status} ${stale.text}`);
+    const member = await prisma.portalMember.findUnique({ where: { staffId_portalId: { staffId: "a-categories", portalId: "default" } } });
+    assert(!member.pagePermissions.includes("finance"), "撤销的权限不得被恢复");
+    // 移出也同样受成员版本保护
+    const staleRemove = await aAdmin.json("DELETE", "/api/staff", { id: "a-categories", updatedAt: staleUser.updatedAt }, "default");
+    assert(staleRemove.status === 409, `旧版本移出 ${staleRemove.status}`);
+    await prisma.client.delete({ where: { id: clientSave.json.client.id } });
+    return "旧页面无法恢复已撤销权限";
   });
 
   await check("D03b", "员工移出门户后：编辑其历史订单（技师不变）仍可保存；把订单改派给已移出员工被拒", async () => {
@@ -752,10 +788,10 @@ try {
     await prisma.portalMember.update({ where: { staffId_portalId: { staffId: "sys1", portalId: "default" } }, data: { isAdmin: false, pagePermissions: PAGE_KEYS } });
     for (let round = 0; round < 3; round += 1) {
       await prisma.portalMember.updateMany({ where: { portalId: "default", staffId: { in: ["a-admin", "ab-admin"] } }, data: { isAdmin: true, pagePermissions: PAGE_KEYS } });
-      const rev = (await aAdmin.get("/api/bootstrap", "default")).json._revision;
+      const [abAt, aAt] = await Promise.all([memberUpdatedAt(aAdmin, "default", "ab-admin"), memberUpdatedAt(abClient, "default", "a-admin")]);
       const [r1, r2] = await Promise.all([
-        aAdmin.json("POST", "/api/staff", { id: "ab-admin", name: "ab-admin", username: "ab-admin", email: "ab-admin@test.local", isAdmin: false, pagePermissions: ["repairs"], expectedRevision: rev }, "default"),
-        abClient.json("POST", "/api/staff", { id: "a-admin", name: "a-admin", username: "a-admin", email: "a-admin@test.local", isAdmin: false, pagePermissions: ["repairs"], expectedRevision: rev }, "default")
+        aAdmin.json("POST", "/api/staff", { id: "ab-admin", name: "ab-admin", username: "ab-admin", email: "ab-admin@test.local", isAdmin: false, pagePermissions: ["repairs"], updatedAt: abAt }, "default"),
+        abClient.json("POST", "/api/staff", { id: "a-admin", name: "a-admin", username: "a-admin", email: "a-admin@test.local", isAdmin: false, pagePermissions: ["repairs"], updatedAt: aAt }, "default")
       ]);
       const admins = await prisma.portalMember.count({ where: { portalId: "default", isAdmin: true } });
       assert(admins >= 1, `第 ${round + 1} 轮后管理员数 ${admins}`);

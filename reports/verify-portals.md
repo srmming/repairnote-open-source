@@ -1,14 +1,14 @@
-# verify-portals 结果（2026-09-18T13:04:36.619Z）
+# verify-portals 结果（2026-09-18T14:18:19.439Z）
 
-通过 57 / 失败 0
+通过 58 / 失败 0
 
 | 用例 | 名称 | 结果 | 说明 |
 |---|---|---|---|
 | G02 | 非系统管理员访问 system API 全部 403；未登录 401 | PASS | 403/401 与数据不变 |
 | G03 | 系统管理接口携带 X-Portal-Id 返回 400；无门户系统管理员可列出门户 | PASS | 无门户系统管理员可管理、不可访问业务 |
-| G04 | 系统管理员只输入名称创建门户：Portal+空Setting+创建者管理员，revision=1 | PASS | id=516ec6da-d989-4d66-9f1d-33124a9be620 |
+| G04 | 系统管理员只输入名称创建门户：Portal+空Setting+创建者管理员，revision=1 | PASS | id=756f8660-1fab-4e1e-86ce-aea73aac1dbc |
 | G06 | 同 key 同名称重放返回 200 且不重复创建；缺失 / 非法 key 400 | PASS | 重放 200 / created=false |
-| G06b | 同操作者同 key 并发双提交只产生一个门户 | PASS | portal=21c998b2-ef3b-4f84-8284-133d9f7fb965 |
+| G06b | 同操作者同 key 并发双提交只产生一个门户 | PASS | portal=de7c8747-9714-4d33-9f86-0d03e85f7239 |
 | G04b | 新建门户同时创建独立管理员账号：账号只属于新门户、非系统管理员；重名 409；弱密码 400；重放不重复建账号 | PASS | 独立账号正确 |
 | G08 | 同 key 不同名称 409 IDEMPOTENCY_CONFLICT；另一操作者使用同 key 独立作用域 | PASS | 409 / 独立作用域 |
 | G10 | 改名只改元数据与 revision；非法输入 400；字符串布尔拒绝 | PASS | revision=3 |
@@ -29,7 +29,8 @@
 | A09/G23 | A 门店管理员改 / 删 B-only 员工被拒；写 isSystemAdmin 拒绝；修改系统主管理账号 / 共享账号全局身份被拒 | PASS | 身份保护有效 |
 | S02 | 改密码后该账号两个旧会话立即失效，旧密码失败，新密码成功 | PASS | 会话撤销与密码同事务 |
 | A10 | 双门户员工从 A 被移出：A 请求立即拒绝，B 会话正常，Staff 不删 | PASS | 移出只影响 A |
-| A12b | 员工写入缺失 / 过期版本：400 / 409；两位管理员基于同一版本编辑同一员工只有一个成功 | PASS | 版本检查覆盖员工写入 |
+| A12b | 员工修改 / 移出缺失或非法 updatedAt 400、过期 409；两位管理员基于同一版本编辑同一员工只有一个成功 | PASS | 员工版本绑定成员记录 |
+| A12c | 撤销权限后：旧页面即使拿到更新的门户版本，提交旧员工数据也被拒，不会恢复已撤销的权限 | PASS | 旧页面无法恢复已撤销权限 |
 | D03b | 员工移出门户后：编辑其历史订单（技师不变）仍可保存；把订单改派给已移出员工被拒 | PASS | 历史归属保留、新指派受限 |
 | A12 | 同门户两名管理员并发互相降级：至少一位保留 | PASS | 3 轮并发均至少保留一位 |
 | D01 | A/B 相同 ticket / 品牌名 / 技师名并存；同门户内唯一冲突；publicToken 全局唯一 | PASS | 约束正确 |
@@ -40,7 +41,7 @@
 | D08/D09 | 单权限用户提交其他目录分区 403；允许分区更新且未提交分区不清空；products 要求双权限 | PASS | 分区授权正确 |
 | D10 | 旧 /api/repairs 集合入口 410/405；/api/clients GET 410 | PASS | 410/405 |
 | D11 | 相同会话先 A 后 B：响应头 X-Portal-Id 正确，无共享缓存 | PASS | 无混入 |
-| D12 | 小资源 GET（catalog / attributes / technicians）不读取全量维修单 / 客户 | PASS | 三个小资源接口 18ms（源码：getBootstrapData 不再包含 repairs/clients；见 data-store.getBootstrapData） |
+| D12 | 小资源 GET（catalog / attributes / technicians）不读取全量维修单 / 客户 | PASS | 三个小资源接口 14ms（源码：getBootstrapData 不再包含 repairs/clients；见 data-store.getBootstrapData） |
 | C01 | 更新 / 删除已有维修单省略 updatedAt 400、非法 400、过期 409；数据与 revision 不变 | PASS | 400/409 |
 | C02 | 两个独立请求用同一版本更新金额：一成功一 409；同毫秒版本递增；createOnly 不能更新已有对象 | PASS | 乐观锁有效 |
 | C03 | 更新与删除并发；锁单后普通员工提交 403；有保修来源的原单删除 409 | PASS | 保护有效 |

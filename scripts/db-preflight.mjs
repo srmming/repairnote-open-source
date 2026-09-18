@@ -24,8 +24,8 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-// 期望结构直接从初始迁移 SQL 解析（每张表每列的类型 / 可空 / 默认值存在性、全部索引名、全部外键名），
-// 与 information_schema 逐项比对；任何一项不一致都拒绝标记基线，避免多门户迁移执行到一半才因缺索引 / 类型不符失败。
+// 期望结构直接从初始迁移 SQL 解析：每张表每列的类型 / 可空、主键列、每个索引的（表、名称、唯一性 / 全文、字段及顺序）、
+// 每个外键的（表、名称、本表列、引用表、引用列）；与 information_schema 逐项比对，任何一项不一致都拒绝进入结构迁移。
 const INIT_SQL = fs.readFileSync(path.join(root, "prisma/migrations", INIT_MIGRATION, "migration.sql"), "utf8");
 const EXPECTED = parseInitMigration(INIT_SQL);
 
@@ -37,30 +37,46 @@ function normalizeType(raw) {
   return type;
 }
 
+function same(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function columnList(text) {
+  return [...String(text).matchAll(/`(\w+)`/g)].map((match) => match[1]);
+}
+
 function parseInitMigration(sql) {
   const tables = {};
-  const indexes = new Set();
-  const foreignKeys = new Set();
+  const indexes = [];
+  const foreignKeys = [];
   for (const match of sql.matchAll(/CREATE TABLE `(\w+)` \(([\s\S]*?)\n\)/g)) {
     const [, table, body] = match;
-    tables[table] = {};
+    tables[table] = { columns: {}, primaryKey: [] };
     for (const line of body.split("\n").map((item) => item.trim()).filter(Boolean)) {
       const column = line.match(/^`(\w+)` ([A-Z]+(?:\([^)]*\))?)(.*)$/);
       if (column) {
         const [, name, type, rest] = column;
-        tables[table][name] = { type: normalizeType(type), nullable: !/NOT NULL/.test(rest) };
+        tables[table].columns[name] = { type: normalizeType(type), nullable: !/NOT NULL/.test(rest) };
         continue;
       }
-      const index = line.match(/^(?:UNIQUE |FULLTEXT )?INDEX `(\w+)`/);
-      if (index) indexes.add(index[1]);
+      const index = line.match(/^(UNIQUE |FULLTEXT )?INDEX `(\w+)`\s*\(([^)]*)\)/);
+      if (index) {
+        indexes.push({ table, name: index[2], unique: index[1]?.trim() === "UNIQUE", fulltext: index[1]?.trim() === "FULLTEXT", columns: columnList(index[3]) });
+        continue;
+      }
+      const pk = line.match(/^PRIMARY KEY \(([^)]*)\)/);
+      if (pk) tables[table].primaryKey = columnList(pk[1]);
     }
   }
-  for (const match of sql.matchAll(/ADD CONSTRAINT `(\w+)` FOREIGN KEY/g)) foreignKeys.add(match[1]);
+  for (const match of sql.matchAll(/ALTER TABLE `(\w+)` ADD CONSTRAINT `(\w+)` FOREIGN KEY \(([^)]*)\) REFERENCES `(\w+)`\(([^)]*)\)/g)) {
+    foreignKeys.push({ table: match[1], name: match[2], columns: columnList(match[3]), refTable: match[4], refColumns: columnList(match[5]) });
+  }
   return { tables, indexes, foreignKeys };
 }
 
 const prisma = new PrismaClient();
 let exitCode = 0;
+let dialect = null;
 
 try {
   const tables = await listTables();
@@ -103,21 +119,6 @@ async function listTables() {
   return rows.map((row) => String(row.name));
 }
 
-async function listColumns(table) {
-  const rows = await prisma.$queryRaw`SELECT column_name AS name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ${table}`;
-  return rows.map((row) => String(row.name));
-}
-
-async function listIndexNames() {
-  const rows = await prisma.$queryRaw`SELECT DISTINCT index_name AS name FROM information_schema.statistics WHERE table_schema = DATABASE()`;
-  return rows.map((row) => String(row.name));
-}
-
-async function listForeignKeys() {
-  const rows = await prisma.$queryRaw`SELECT constraint_name AS name FROM information_schema.table_constraints WHERE table_schema = DATABASE() AND constraint_type = 'FOREIGN KEY'`;
-  return rows.map((row) => String(row.name));
-}
-
 async function migrationApplied(name) {
   const tables = await listTables();
   if (!tables.includes("_prisma_migrations")) return false;
@@ -125,39 +126,110 @@ async function migrationApplied(name) {
   return Number(rows?.[0]?.count || 0) > 0;
 }
 
+async function detectDialect() {
+  if (dialect) return dialect;
+  const rows = await prisma.$queryRaw`SELECT VERSION() AS version`;
+  const version = String(rows[0]?.version || "");
+  dialect = { mariadb: /mariadb/i.test(version), version };
+  return dialect;
+}
+
 async function listColumnDetails(table) {
   const rows = await prisma.$queryRaw`SELECT column_name AS name, column_type AS type, is_nullable AS nullable FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ${table}`;
   return new Map(rows.map((row) => [String(row.name), { type: normalizeType(row.type), nullable: String(row.nullable).toUpperCase() === "YES" }]));
 }
 
+// MariaDB 没有原生 JSON 类型：JSON 是 LONGTEXT 的别名，并附带 CHECK (json_valid(col)) 约束。
+async function listJsonCheckedColumns(table) {
+  const rows = await prisma.$queryRaw`SELECT cc.constraint_name AS name, cc.check_clause AS clause FROM information_schema.check_constraints cc WHERE cc.constraint_schema = DATABASE() AND cc.table_name = ${table}`.catch(() => []);
+  const columns = new Set();
+  for (const row of rows) {
+    const match = String(row.clause || "").match(/json_valid\(`?(\w+)`?\)/i);
+    if (match) columns.add(match[1]);
+  }
+  return columns;
+}
+
+async function listIndexDefinitions() {
+  const rows = await prisma.$queryRaw`SELECT table_name AS tbl, index_name AS name, non_unique AS nonUnique, seq_in_index AS seq, column_name AS col, index_type AS type FROM information_schema.statistics WHERE table_schema = DATABASE() ORDER BY table_name, index_name, seq_in_index`;
+  const map = new Map();
+  for (const row of rows) {
+    const key = `${row.tbl}.${row.name}`;
+    const entry = map.get(key) || { table: String(row.tbl), name: String(row.name), unique: !Number(row.nonUnique), fulltext: String(row.type).toUpperCase() === "FULLTEXT", columns: [] };
+    entry.columns.push(String(row.col));
+    map.set(key, entry);
+  }
+  return map;
+}
+
+async function listForeignKeyDefinitions() {
+  const rows = await prisma.$queryRaw`SELECT table_name AS tbl, constraint_name AS name, column_name AS col, referenced_table_name AS refTbl, referenced_column_name AS refCol, ordinal_position AS pos FROM information_schema.key_column_usage WHERE table_schema = DATABASE() AND referenced_table_name IS NOT NULL ORDER BY table_name, constraint_name, ordinal_position`;
+  const map = new Map();
+  for (const row of rows) {
+    const key = `${row.tbl}.${row.name}`;
+    const entry = map.get(key) || { table: String(row.tbl), name: String(row.name), columns: [], refTable: String(row.refTbl), refColumns: [] };
+    entry.columns.push(String(row.col));
+    entry.refColumns.push(String(row.refCol));
+    map.set(key, entry);
+  }
+  return map;
+}
+
 async function compareInitStructure() {
   const diff = [];
+  const { mariadb } = await detectDialect();
   const tables = await listTables();
-  for (const [table, expectedColumns] of Object.entries(EXPECTED.tables)) {
+  const indexDefs = await listIndexDefinitions();
+  const fkDefs = await listForeignKeyDefinitions();
+
+  for (const [table, expected] of Object.entries(EXPECTED.tables)) {
     if (!tables.includes(table)) {
       diff.push(`缺少表 ${table}`);
       continue;
     }
     const actual = await listColumnDetails(table);
-    for (const [column, expected] of Object.entries(expectedColumns)) {
+    const jsonChecked = mariadb ? await listJsonCheckedColumns(table) : new Set();
+    for (const [column, spec] of Object.entries(expected.columns)) {
       const found = actual.get(column);
       if (!found) {
         diff.push(`表 ${table} 缺少列 ${column}`);
         continue;
       }
-      if (found.type !== expected.type) diff.push(`表 ${table} 列 ${column} 类型 ${found.type} ≠ 预期 ${expected.type}`);
-      if (found.nullable !== expected.nullable) diff.push(`表 ${table} 列 ${column} 可空性与预期不一致`);
+      let typeOk = found.type === spec.type;
+      if (!typeOk && mariadb && spec.type === "json") {
+        // MariaDB：json 列存为 longtext，且必须带 json_valid 校验约束；不能把任意 longtext 当成 JSON
+        typeOk = found.type === "longtext" && jsonChecked.has(column);
+        if (found.type === "longtext" && !jsonChecked.has(column)) diff.push(`表 ${table} 列 ${column} 缺少 JSON 校验约束（MariaDB 期望 CHECK json_valid）`);
+      }
+      if (!typeOk && !(mariadb && spec.type === "json" && found.type === "longtext")) diff.push(`表 ${table} 列 ${column} 类型 ${found.type} ≠ 预期 ${spec.type}`);
+      if (found.nullable !== spec.nullable) diff.push(`表 ${table} 列 ${column} 可空性与预期不一致`);
     }
-    for (const column of actual.keys()) if (!expectedColumns[column]) diff.push(`表 ${table} 多出列 ${column}`);
+    for (const column of actual.keys()) if (!expected.columns[column]) diff.push(`表 ${table} 多出列 ${column}`);
+    const pk = indexDefs.get(`${table}.PRIMARY`);
+    if (!pk) diff.push(`表 ${table} 缺少主键`);
+    else if (!same(pk.columns, expected.primaryKey)) diff.push(`表 ${table} 主键列 (${pk.columns.join(",")}) ≠ 预期 (${expected.primaryKey.join(",")})`);
   }
-  const indexes = await listIndexNames();
-  for (const name of EXPECTED.indexes) if (!indexes.includes(name)) diff.push(`缺少索引 ${name}`);
-  const foreignKeys = await listForeignKeys();
-  for (const name of EXPECTED.foreignKeys) if (!foreignKeys.includes(name)) diff.push(`缺少外键 ${name}`);
-  for (const table of Object.keys(EXPECTED.tables)) {
-    if (!tables.includes(table)) continue;
-    const pk = await prisma.$queryRaw`SELECT COUNT(*) AS c FROM information_schema.table_constraints WHERE table_schema = DATABASE() AND table_name = ${table} AND constraint_type = 'PRIMARY KEY'`;
-    if (!Number(pk[0]?.c)) diff.push(`表 ${table} 缺少主键`);
+
+  for (const expected of EXPECTED.indexes) {
+    const found = indexDefs.get(`${expected.table}.${expected.name}`);
+    if (!found) {
+      diff.push(`表 ${expected.table} 缺少索引 ${expected.name}`);
+      continue;
+    }
+    if (found.unique !== expected.unique) diff.push(`索引 ${expected.table}.${expected.name} 唯一性与预期不一致（期望 ${expected.unique ? "UNIQUE" : "非唯一"}）`);
+    if (found.fulltext !== expected.fulltext) diff.push(`索引 ${expected.table}.${expected.name} 类型与预期不一致（期望 ${expected.fulltext ? "FULLTEXT" : "普通"}）`);
+    if (!same(found.columns, expected.columns)) diff.push(`索引 ${expected.table}.${expected.name} 字段 (${found.columns.join(",")}) ≠ 预期 (${expected.columns.join(",")})`);
+  }
+
+  for (const expected of EXPECTED.foreignKeys) {
+    const found = fkDefs.get(`${expected.table}.${expected.name}`);
+    if (!found) {
+      diff.push(`表 ${expected.table} 缺少外键 ${expected.name}`);
+      continue;
+    }
+    if (found.refTable !== expected.refTable || !same(found.columns, expected.columns) || !same(found.refColumns, expected.refColumns)) {
+      diff.push(`外键 ${expected.table}.${expected.name} 定义 (${found.columns.join(",")}) → ${found.refTable}(${found.refColumns.join(",")}) ≠ 预期 (${expected.columns.join(",")}) → ${expected.refTable}(${expected.refColumns.join(",")})`);
+    }
   }
   return diff;
 }

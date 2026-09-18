@@ -1,7 +1,7 @@
 {
-  "at": "2026-09-18T13:04:36.619Z",
+  "at": "2026-09-18T14:18:19.439Z",
   "baseUrl": "http://localhost:3010",
-  "passed": 57,
+  "passed": 58,
   "failed": 0,
   "results": [
     {
@@ -20,7 +20,7 @@
       "id": "G04",
       "name": "系统管理员只输入名称创建门户：Portal+空Setting+创建者管理员，revision=1",
       "ok": true,
-      "detail": "id=516ec6da-d989-4d66-9f1d-33124a9be620"
+      "detail": "id=756f8660-1fab-4e1e-86ce-aea73aac1dbc"
     },
     {
       "id": "G06",
@@ -32,7 +32,7 @@
       "id": "G06b",
       "name": "同操作者同 key 并发双提交只产生一个门户",
       "ok": true,
-      "detail": "portal=21c998b2-ef3b-4f84-8284-133d9f7fb965"
+      "detail": "portal=de7c8747-9714-4d33-9f86-0d03e85f7239"
     },
     {
       "id": "G04b",
@@ -156,9 +156,15 @@
     },
     {
       "id": "A12b",
-      "name": "员工写入缺失 / 过期版本：400 / 409；两位管理员基于同一版本编辑同一员工只有一个成功",
+      "name": "员工修改 / 移出缺失或非法 updatedAt 400、过期 409；两位管理员基于同一版本编辑同一员工只有一个成功",
       "ok": true,
-      "detail": "版本检查覆盖员工写入"
+      "detail": "员工版本绑定成员记录"
+    },
+    {
+      "id": "A12c",
+      "name": "撤销权限后：旧页面即使拿到更新的门户版本，提交旧员工数据也被拒，不会恢复已撤销的权限",
+      "ok": true,
+      "detail": "旧页面无法恢复已撤销权限"
     },
     {
       "id": "D03b",
@@ -224,7 +230,7 @@
       "id": "D12",
       "name": "小资源 GET（catalog / attributes / technicians）不读取全量维修单 / 客户",
       "ok": true,
-      "detail": "三个小资源接口 18ms（源码：getBootstrapData 不再包含 repairs/clients；见 data-store.getBootstrapData）"
+      "detail": "三个小资源接口 14ms（源码：getBootstrapData 不再包含 repairs/clients；见 data-store.getBootstrapData）"
     },
     {
       "id": "C01",

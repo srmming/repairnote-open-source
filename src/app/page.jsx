@@ -1791,10 +1791,23 @@ function Workspace({ identity, portal, api, initialRoute, onLogout, onSwitchPort
     return saveQueueRef.current;
   }
 
+  // 员工页打开时重新读取最新成员列表（含每条成员的 updatedAt），避免用其他操作后残留的旧列表提交。
+  async function reloadStaffList() {
+    try {
+      const users = await api.get("/api/staff");
+      if (Array.isArray(users)) applyStaffSaveResult({ users });
+      return true;
+    } catch (error) {
+      if (error?.code !== "STALE_WORKSPACE") showToast(error.message || t("loadFailedRetry"));
+      return false;
+    }
+  }
+
   async function saveStaffRecord(staffPayload) {
     saveQueueRef.current = enqueueWrite(async () => {
       try {
-        const saved = await api.json("/api/staff", "POST", { ...staffPayload, expectedRevision: confirmedDataRef.current._revision });
+        // 新建带门户版本；已有员工带成员记录读取时的 updatedAt（由员工弹窗传入），不用被其他操作推进过的门户版本
+        const saved = await api.json("/api/staff", "POST", staffPayload.id ? staffPayload : { ...staffPayload, expectedRevision: confirmedDataRef.current._revision });
         applyStaffSaveResult(saved);
         if (saved.passwordChanged && saved.user?.id === identity?.id) {
           showToast(t("passwordChangedRelogin"));
@@ -1809,10 +1822,10 @@ function Workspace({ identity, portal, api, initialRoute, onLogout, onSwitchPort
     return saveQueueRef.current;
   }
 
-  async function deleteStaffRecord(staffId) {
+  async function deleteStaffRecord(staffId, updatedAt) {
     saveQueueRef.current = enqueueWrite(async () => {
       try {
-        const saved = await api.json("/api/staff", "DELETE", { id: staffId, expectedRevision: confirmedDataRef.current._revision });
+        const saved = await api.json("/api/staff", "DELETE", { id: staffId, updatedAt: updatedAt || "" });
         applyStaffSaveResult(saved);
         return true;
       } catch (error) {
@@ -1933,6 +1946,7 @@ function Workspace({ identity, portal, api, initialRoute, onLogout, onSwitchPort
           deleteRepairRecord={deleteRepairRecord}
           saveStaffRecord={saveStaffRecord}
           deleteStaffRecord={deleteStaffRecord}
+          reloadStaffList={reloadStaffList}
           navigate={navigate}
           filters={filters}
           setFilters={setFilters}
@@ -3481,14 +3495,17 @@ function AttributesPage({ data, saveNonRepairResource, filters, setFilters, setM
   );
 }
 
-function StaffPage({ data, deleteStaffRecord, filters, setFilters, setModal, session, toast, t }) {
+function StaffPage({ data, deleteStaffRecord, reloadStaffList, filters, setFilters, setModal, session, toast, t }) {
+  useEffect(() => {
+    reloadStaffList?.();
+  }, []);
   const rows = (data.users || []).filter((item) => [item.name, item.username, item.email].join(" ").toLowerCase().includes(filters.staffSearch.toLowerCase()));
   const page = paginate(rows, filters.staffPage);
   const remove = async (user) => {
     if (user.id === session?.id) return toast(t("currentUserCannotDelete"));
     if (user.isAdmin && data.users.filter((item) => item.isAdmin).length <= 1) return toast(t("lastAdminCannotDelete"));
     if (!confirm(t("confirmRemoveStaff"))) return;
-    const ok = await deleteStaffRecord(user.id);
+    const ok = await deleteStaffRecord(user.id, user.updatedAt);
     if (ok) toast(t("saved"));
   };
   return (
@@ -6279,7 +6296,7 @@ function ModalForm({ modal, data, saveClientRecord, saveStaffRecord, saveNonRepa
         const isLastAdmin = modal.id && current?.isAdmin && data.users.filter((user) => user.isAdmin).length <= 1;
         const isAdmin = isLastAdmin ? true : Boolean(form.isAdmin);
         const pagePermissions = isAdmin ? PAGE_PERMISSION_KEYS : normalizedPagePermissions(form);
-        const ok = await saveStaffRecord({ id: modal.id || "", name: form.name?.trim() || "", username: form.username?.trim() || "", email: form.email || "", isAdmin, pagePermissions, password: form.password || "" });
+        const ok = await saveStaffRecord({ id: modal.id || "", ...(modal.id ? { updatedAt: current?.updatedAt || "" } : {}), name: form.name?.trim() || "", username: form.username?.trim() || "", email: form.email || "", isAdmin, pagePermissions, password: form.password || "" });
         if (!ok) return;
         close();
         toast(modal.id ? t("saved") : t("created"));

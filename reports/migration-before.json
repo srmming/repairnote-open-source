@@ -1,5 +1,5 @@
 {
-  "at": "2026-09-18T12:53:31.073Z",
+  "at": "2026-09-18T14:16:05.369Z",
   "counts": {
     "Staff": 3,
     "StaffSession": 1,
@@ -74,8 +74,8 @@
     }
   ],
   "settingMain": {
+    "shopName": "老店",
     "phone": "600111222",
-    "taxRate": 21,
-    "shopName": "è€åº—"
+    "taxRate": 21
   }
 }

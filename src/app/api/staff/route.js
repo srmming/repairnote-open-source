@@ -14,7 +14,20 @@ import { securityLog } from "@/lib/system-admin";
 // - 删除员工 = 移出当前门户：只删除 PortalMember，不删除全局 Staff。
 // - 所有网页写 API 拒绝 isSystemAdmin 字段。
 
-const ALLOWED_KEYS = ["id", "name", "username", "email", "password", "isAdmin", "pagePermissions", "expectedRevision", "portalId"];
+const ALLOWED_KEYS = ["id", "name", "username", "email", "password", "isAdmin", "pagePermissions", "expectedRevision", "updatedAt", "portalId"];
+
+// 已有成员的修改 / 移出必须携带该成员记录读取时的 updatedAt：缺失 400、非法 400、过期 409。
+// 门户 revision 会被客户 / 订单等无关操作推进，不能作为员工数据的版本；成员自己的时间戳才能识别“旧权限数据”。
+function assertFreshMember(member, expectedUpdatedAt) {
+  if (expectedUpdatedAt === undefined || expectedUpdatedAt === null || expectedUpdatedAt === "") throw badRequest("缺少员工版本（updatedAt），请刷新员工列表后重试", "VERSION_REQUIRED");
+  const expected = new Date(expectedUpdatedAt);
+  if (Number.isNaN(expected.getTime())) throw badRequest("员工版本（updatedAt）格式不正确", "INVALID_VERSION");
+  if (expected.getTime() !== member.updatedAt.getTime()) throw conflict("该员工的资料或权限刚被其他人修改，请刷新后重试", "VERSION_CONFLICT");
+}
+
+function nextMemberUpdatedAt(member) {
+  return new Date(Math.max(Date.now(), member.updatedAt.getTime() + 1));
+}
 const throwBad = (message) => { throw badRequest(message); };
 
 export async function GET(request) {
@@ -42,8 +55,8 @@ export async function POST(request) {
     const pagePermissions = isAdmin ? [...PAGE_PERMISSION_KEYS] : parsePagePermissions(body.pagePermissions, throwBad);
     const password = body.password === undefined || body.password === null || body.password === "" ? "" : validatePassword(body.password, throwBad);
 
-    // 员工新建 / 改权 / 改身份都必须带读取时的门户版本：缺失 400、过期 409，避免两位管理员的旧表单互相覆盖。
-    const expectedRevision = parseExpectedRevision(body.expectedRevision);
+    // 新建员工带读取时的门户版本；已有员工的修改用成员记录自身的 updatedAt（见 assertFreshMember）。
+    const expectedRevision = staffId ? parseExpectedRevision(body.expectedRevision, { required: false }) : parseExpectedRevision(body.expectedRevision);
     const { result, revision } = await withPortalWrite(ctx, { staffIds: staffId ? [staffId] : [], expectedRevision }, async (tx, { lockedStaff }) => {
       if (!staffId) {
         const name = validatePersonName(body.name, throwBad);
@@ -62,6 +75,7 @@ export async function POST(request) {
       const locked = lockedStaff.find((row) => row.id === staffId);
       const member = locked ? await tx.portalMember.findUnique({ where: { staffId_portalId: { staffId, portalId: ctx.portalId } } }) : null;
       if (!locked || !member) throw notFound("没有找到员工", "STAFF_NOT_FOUND");
+      assertFreshMember(member, body.updatedAt);
       const target = await tx.staff.findUnique({ where: { id: staffId } });
 
       const name = body.name === undefined ? target.name : validatePersonName(body.name, throwBad);
@@ -85,7 +99,7 @@ export async function POST(request) {
       const identityData = identityChanged ? { name, username, email, ...(password ? { passwordHash: hashPassword(password) } : {}) } : null;
       const updatedStaff = identityData ? await tx.staff.update({ where: { id: staffId }, data: identityData }) : target;
       if (password) await revokeStaffSessions(tx, staffId);
-      const updatedMember = await tx.portalMember.update({ where: { staffId_portalId: { staffId, portalId: ctx.portalId } }, data: { isAdmin, pagePermissions } });
+      const updatedMember = await tx.portalMember.update({ where: { staffId_portalId: { staffId, portalId: ctx.portalId } }, data: { isAdmin, pagePermissions, updatedAt: nextMemberUpdatedAt(member) } });
       return { staff: updatedStaff, member: updatedMember, created: false, passwordChanged: Boolean(password), identityChanged };
     });
 
@@ -122,10 +136,11 @@ export async function DELETE(request) {
     if (!staffId) throw badRequest("缺少员工");
     if (staffId === ctx.staff.id) throw badRequest("当前登录账号不可移出，请由其他管理员操作");
 
-    const expectedRevision = parseExpectedRevision(body.expectedRevision);
+    const expectedRevision = parseExpectedRevision(body.expectedRevision, { required: false });
     const { revision } = await withPortalWrite(ctx, { staffIds: [staffId], expectedRevision }, async (tx) => {
       const member = await tx.portalMember.findUnique({ where: { staffId_portalId: { staffId, portalId: ctx.portalId } } });
       if (!member) throw notFound("没有找到员工", "STAFF_NOT_FOUND");
+      assertFreshMember(member, body.updatedAt);
       if (member.isAdmin) {
         const adminCount = await tx.portalMember.count({ where: { portalId: ctx.portalId, isAdmin: true } });
         if (adminCount <= 1) throw conflict("最后一个管理员不可删除或降级", "LAST_PORTAL_ADMIN");

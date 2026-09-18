@@ -1,9 +1,9 @@
 # 多门户验收结果（ACCEPTANCE.md 91 项）
 
 - 提交：见分支 `claude/multi-portal-handoff-f84f3c` 最终提交（基线 `aa035f88a67aae5b9c0f80aa3830c61a6bd0d87b`，本分支起点 HEAD 与基线一致）。
-- 环境：macOS，Node v26.7.0（项目要求 ≥24），MySQL 8.4（docker `mysql:8.4`，InnoDB，默认 REPEATABLE READ），Chrome（Playwright channel）。
+- 环境：macOS，Node v26.7.0（项目要求 ≥24），MySQL 8.4（docker `mysql:8.4`，InnoDB，默认 REPEATABLE READ）与 MariaDB 10.11.19（docker `mariadb:10.11`，旧库升级演练），Chrome（Playwright channel）。
 - 测试库：`repairnote_test`（API / 浏览器验收，脚本每次清空重建）、`repairnote_upgrade_test`（旧库升级演练）、`repairnote_partial_test`（残缺库预检）。测试服务 `NODE_ENV=production node server.js`，`REPAIRNOTE_PUBLIC_ORIGIN=http://localhost:3010`。
-- 证据：`reports/verify-portals.md`（API+数据库断言，57 条检查）、`reports/smoke-portals.json` + `reports/screenshots/*.png`（网页路径，桌面 / 窄屏）、`reports/migration-before.json` / `migration-after.json`（升级演练）、`reports/BUG-REVIEW-处理结论.md`。
+- 证据：`reports/verify-portals.md`（API+数据库断言，58 条检查）、`reports/smoke-portals.json` + `reports/screenshots/*.png`（网页路径，桌面 / 窄屏）、`reports/migration-before.json` / `migration-after.json`（升级演练）、`reports/BUG-REVIEW-处理结论.md`。
 - 状态定义：PASS = 实际执行并通过；BLOCKED = 本环境无法执行（说明原因），**不视为通过**；不存在“默认通过”。
 - 命令（退出码 0 除非注明）：`npm ci`、`npx prisma validate`、`npx prisma generate`、`npm run build`、`npm run lint`、`npm run smoke`、`npm run smoke:mobile`、`npm run smoke:mobile:boss`、`node scripts/verify-reports-parity.mjs`、`node scripts/verify-portal-migration.mjs --before/--after`、`node scripts/verify-portals.mjs`、`node scripts/smoke-portals.mjs`、`npm audit --omit=dev`（退出码 1，见 R05）、`npm run plesk:pack`。
 
@@ -22,7 +22,7 @@
 | A09 | PASS | VP A09/G23：改 / 删 B 员工 404；isSystemAdmin 400；系统账号与共享账号全局身份 403 `IDENTITY_PROTECTED` |
 | A10 | PASS | VP A10：移出后 A 403、B 200、Staff 保留、会话仍在 |
 | A11 | PASS | VP G11/G12/G13/A11：停用后旧会话下一次请求 403 `PORTAL_INACTIVE`；G17 改权即时生效 |
-| A12 | PASS | VP A12：3 轮并发互降至少保留一位管理员，最多一方成功；VP A12b：员工写入缺失版本 400、过期 409，两位管理员基于同一版本编辑同一员工只有一个成功 |
+| A12 | PASS | VP A12：3 轮并发互降至少保留一位管理员，最多一方成功；VP A12b：已有成员的修改 / 移出用成员记录自身 `updatedAt` 做版本（缺失 400、非法 400、过期 409），同版本并发编辑只有一个成功；VP A12c：B 撤销权限 → A 保存无关客户推进门户版本 → A 用旧员工数据 + 最新门户版本提交仍被 409，已撤销权限不会恢复 |
 
 ## D. 数据访问与隔离
 
@@ -95,8 +95,8 @@
 | ID | 结果 | 证据 / 说明 |
 |---|---|---|
 | M01 | PASS | 空库 `db-setup`：严格凭据创建首位系统 / default 管理员，可从设置创建门户（smoke-portals） |
-| M02 | PASS | `repairnote_upgrade_test`：旧结构 + 数据 → 预检要求显式 ID → 升级 → `verify-portal-migration --after` 通过（15 表行数 / 金额 / token / id 一致，全部 default，权限回填，旧会话清空） |
-| M03 | PASS | 预检改为从初始迁移 SQL 解析完整结构（每列类型 / 可空、全部索引、全部外键、主键）逐项比对；只有 Staff 表、缺 `Client_name_idx`、`Payment.note` 改成 TEXT 三种情况均被检出并停止，未标记迁移；已标记基线的旧库在多门户迁移前同样比对 |
+| M02 | PASS | MySQL 8.4 `repairnote_upgrade_test` 与 MariaDB 10.11 `repairnote_maria_test` 各演练一次：旧结构 + 数据 → 预检要求显式 ID → 升级 → `verify-portal-migration --after` 通过（15 表行数 / 金额 / token / id 一致，全部 default，权限回填，旧会话清空）；MariaDB 升级后应用启动、登录、创建门户、报表、公共页均正常 |
+| M03 | PASS | 预检从初始迁移 SQL 解析完整结构逐项比对：每列类型 / 可空、主键列、索引（表 + 名称 + 唯一性 / 全文 + 字段及顺序）、外键（本表列 + 引用表 + 引用列）；MariaDB 下 JSON 列按 `longtext + CHECK json_valid` 校验。实测检出：只有 Staff 表、缺 `Client_name_idx`、`Payment.note` 改 TEXT、`Repair_publicToken_key` 由 UNIQUE 改普通索引、`Attribute_groupId_idx` 字段顺序变化、`Payment_repairId_fkey` 引用错表、MariaDB 上 JSON 列丢失 json_valid 约束；完整 MariaDB 旧库预检通过 |
 | M04 | PASS | 在 `repairnote_upgrade_test` 演练：mysqldump 备份 → 人为删掉迁移会 DROP 的索引并绕过预检直接 `migrate deploy` → 迁移在中途失败（Portal 表、`Staff.isSystemAdmin` 已因隐式提交留下，`_prisma_migrations` 记录未完成）→ 再跑 `db-setup` 被预检拒绝 → 从备份恢复 → 重新升级并 `verify-portal-migration --after` 通过 |
 | M05 | PASS | `npm run plesk:pack` 生成包含 migrations、`db-setup`/`db-preflight`/`portal-admin`/`verify-portal-migration`、文档的 ZIP；`docker build` 成功，镜像用空库 `repairnote_docker_test` 启动：预检 → 迁移 → 严格凭据创建系统主管理员 → check 通过，登录 / 门户列表 / 创建第二门户 API 均成功；缺少 `REPAIRNOTE_PUBLIC_ORIGIN` 时容器拒绝启动（非零退出） |
 
@@ -158,6 +158,14 @@
 | 4 | 员工移出后历史订单无法保存 | 技师引用只在新建或技师变化时校验（VP D03b） |
 | 5 | 保存中切换保护未覆盖全部写入 | API 实例统计所有非 GET 请求；设置表单与编辑弹窗纳入离开保护（U03 / U04） |
 | 6 | 员工写入可绕过版本检查 | 前端携带读取时版本，服务端缺失 400 / 过期 409（VP A12b） |
+
+## 审核意见处理（PR #1 第二轮）
+
+| # | 意见 | 处理 |
+|---|---|---|
+| 1 | 员工数据仍用可被其他操作推进的门户版本 | 已有成员的修改 / 移出改用成员记录自身 `updatedAt`（缺失 400、非法 400、过期 409，成功后严格递增）；员工页打开时重新拉取最新成员列表；新建员工仍带门户版本。VP A12b / A12c |
+| 2 | MariaDB 的 JSON 别名被误判 | 预检按 `SELECT VERSION()` 识别 MariaDB：JSON 列要求 `longtext` 且存在 `CHECK json_valid(col)`；真实 MariaDB 10.11 旧库升级演练通过，丢失约束的 longtext 被拦下（M02 / M03） |
+| 3 | 索引 / 主键 / 外键只比名称 | 比对表 + 名称 + 唯一性 / 全文 + 字段顺序、主键列、外键本表列 + 引用表 + 引用列；UNIQUE 改普通、字段顺序变化、外键指向错表均被检出（M03） |
 
 ## 汇总
 

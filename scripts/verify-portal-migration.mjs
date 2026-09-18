@@ -57,7 +57,9 @@ try {
     const base = await collect();
     const staff = await prisma.$queryRawUnsafe("SELECT id, username, isAdmin, pagePermissions FROM Staff ORDER BY id");
     const setting = await prisma.$queryRawUnsafe("SELECT id, value FROM Setting");
-    const snapshot = { at: new Date().toISOString(), ...base, staff: staff.map((row) => ({ id: row.id, username: row.username, isAdmin: Boolean(row.isAdmin), pagePermissions: typeof row.pagePermissions === "string" ? JSON.parse(row.pagePermissions) : row.pagePermissions })), settingMain: setting.find((row) => row.id === "main")?.value ?? null };
+    // MariaDB 的 JSON 列经原始 SQL 返回字符串，MySQL 返回对象：统一解析后再存
+    const jsonValue = (value) => (typeof value === "string" ? JSON.parse(value) : value);
+    const snapshot = { at: new Date().toISOString(), ...base, staff: staff.map((row) => ({ id: row.id, username: row.username, isAdmin: Boolean(row.isAdmin), pagePermissions: jsonValue(row.pagePermissions) })), settingMain: jsonValue(setting.find((row) => row.id === "main")?.value ?? null) };
     fs.writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2));
     console.log(`✓ 已记录迁移前快照：${path.relative(root, snapshotPath)}`);
     console.log(JSON.stringify(snapshot.counts));
@@ -85,7 +87,8 @@ try {
     if (before.counts.Staff > 0 && !portal) problems.push("默认门户 default 不存在");
     if (portal && !portal.isActive) problems.push("默认门户应为启用状态");
     const setting = await prisma.setting.findUnique({ where: { portalId: "default" } });
-    if (before.settingMain && JSON.stringify(setting?.value) !== JSON.stringify(before.settingMain)) problems.push("默认门户设置与迁移前 main 不一致");
+    const settingValue = typeof setting?.value === "string" ? JSON.parse(setting.value) : setting?.value;
+    if (before.settingMain && JSON.stringify(settingValue) !== JSON.stringify(before.settingMain)) problems.push("默认门户设置与迁移前 main 不一致");
 
     // 成员权限回填 + 系统主管理员
     const members = await prisma.portalMember.findMany({ where: { portalId: "default" } });
