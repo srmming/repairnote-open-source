@@ -10,6 +10,7 @@ The current codebase is a Next.js + MySQL/MariaDB application. It is intended fo
 - Client management and client history lookup
 - Brand, model, service, part, attribute, and technician management
 - Staff login and page permissions
+- Multiple portals (shops) in one deployment: clients, orders, catalog, settings and backups are isolated per portal; one account can join several portals; a system administrator manages portals and members from Settings → Portal management (see `docs/门户管理使用说明.md`)
 - Reports and finance summaries
 - Public repair status page with QR code support
 - JSON and ZIP backup export/import
@@ -52,12 +53,13 @@ Start the local MySQL/MariaDB service:
 docker compose up -d
 ```
 
-Run migrations and seed data:
+Set real first-admin credentials in `.env` (`REPAIRNOTE_ADMIN_USERNAME` / `REPAIRNOTE_ADMIN_PASSWORD`; default or placeholder passwords are rejected) and `REPAIRNOTE_PUBLIC_ORIGIN` (the origin you open in the browser, e.g. `http://localhost:3000`), then run the database setup (preflight → migrations → first system administrator → health check):
 
 ```bash
-npm run db:migrate
-npm run db:seed
+npm run db:setup
 ```
+
+Optional demo data for local development only: set `REPAIRNOTE_SEED_DEMO=true` before `npm run db:seed`.
 
 Start the app:
 
@@ -75,12 +77,16 @@ http://localhost:3000
 
 ```bash
 npm run build
-npm run smoke
+npm run lint                 # real static check (tsc + API auth-guard check), not `next build`
+npm run smoke                # SMOKE_USERNAME / SMOKE_PASSWORD required
 npm run smoke:mobile
-npm run db:migrate:deploy
-npm run db:seed
+npm run db:setup             # preflight + migrate deploy + seed + system admin bootstrap + check
+npm run verify:portals       # multi-portal API acceptance on a *_test database
+npm run smoke:portals        # browser walk-through of Settings → Portal management
 npm run plesk:pack
 ```
+
+Upgrading an existing single-portal database requires `REPAIRNOTE_SYSTEM_ADMIN_STAFF_ID`; see `docs/多门户升级与运维说明.md`. Never run old single-portal code against the upgraded database.
 
 ## Deployment Notes
 
@@ -90,7 +96,7 @@ Example environment files are provided for local, VPS, and Plesk-style installs:
 - `.env.vps.example`
 - `.env.plesk.example`
 
-Change the default admin password before exposing the app to the public internet.
+There is no default admin password: the first install fails unless real credentials are provided. `REPAIRNOTE_PUBLIC_ORIGIN` must match the public https origin in production.
 
 ## Data Safety
 

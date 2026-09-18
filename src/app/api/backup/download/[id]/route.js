@@ -1,19 +1,23 @@
-import { authErrorResponse, requirePageAccess } from "@/lib/auth";
+import { errorResponse, requestIdOf } from "@/lib/api-errors";
+import { requirePortalContext } from "@/lib/portal-context";
 import { backupJsonPayload, zipResponse } from "@/lib/backup-zip";
-import { backupFileName, getBackupSnapshot } from "@/lib/backup-store";
+import { backupFileName, getBackupSnapshot, snapshotDataForDownload } from "@/lib/backup-store";
 
-export async function GET(_request, { params }) {
+export async function GET(request, { params }) {
+  const requestId = requestIdOf(request);
   try {
-    await requirePageAccess("backup");
+    const ctx = await requirePortalContext(request, { anyOf: ["backup"] });
     const { id } = await params;
-    const snapshot = await getBackupSnapshot(id);
+    const snapshot = await getBackupSnapshot(ctx, id);
     const baseName = backupFileName(snapshot);
+    const data = snapshotDataForDownload(ctx, snapshot);
     return zipResponse({
-      json: backupJsonPayload(snapshot.data, { backupId: snapshot.id }),
+      json: backupJsonPayload(data, { backupId: snapshot.id, formatVersion: data.formatVersion, sourcePortalId: data.sourcePortalId, sourcePortalName: data.sourcePortalName }),
       zipName: `${baseName}.zip`,
-      jsonName: `${baseName}.json`
+      jsonName: `${baseName}.json`,
+      headers: { "X-Portal-Id": ctx.portalId, "Cache-Control": "private, no-store" }
     });
   } catch (error) {
-    return authErrorResponse(error);
+    return errorResponse(error, { requestId });
   }
 }

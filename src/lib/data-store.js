@@ -1,9 +1,15 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { hashPassword } from "@/lib/auth";
-import { defaultSettings, normalizeStatus, statusOrder } from "@/lib/seed-data";
+import { PAGE_PERMISSION_KEYS } from "@/lib/auth";
+import { badRequest, conflict, forbidden, notFound } from "@/lib/api-errors";
+import { parseExpectedRevision, withPortalWrite } from "@/lib/portal-write";
+import { serializeMemberUser } from "@/lib/portal-store";
+import { defaultSettings, normalizeStatus, SETTING_KEYS, statusOrder } from "@/lib/seed-data";
 import { buildRepairSearchText, ticketSortValue } from "@/lib/search-text";
 import crypto from "crypto";
+
+// 所有业务数据函数都必须显式接收已校验的门户上下文 ctx（requirePortalContext 的返回值）。
+// ctx 缺失直接抛错，不允许回退 default 或全库查询；写入一律经过 withPortalWrite（门户写锁 + 版本）。
 
 const moneyNumber = (value) => Number(value || 0);
 // LIKE 参数中的 % _ \ 转成字面量，保持与前端「包含」语义一致。
@@ -19,6 +25,14 @@ const dbSortOrder = (value, fallback = 0) => {
   return Number.isFinite(number) ? Math.trunc(number) : fallback;
 };
 const DEFAULT_TECHNICIAN_COLOR = "#16a34a";
+const ID_CHUNK = 1000;
+
+export function requireCtx(ctx) {
+  if (!ctx || typeof ctx.portalId !== "string" || !ctx.portalId || !ctx.staff?.id) {
+    throw new Error("业务数据函数必须传入已校验的门户上下文 ctx");
+  }
+  return ctx.portalId;
+}
 
 function formatClientName(value) {
   return String(value || "")
@@ -35,7 +49,7 @@ function normalizeClientLevel(level) {
   return CLIENT_LEVELS.includes(level) ? level : DEFAULT_CLIENT_LEVEL;
 }
 
-// 服务端订单锁定判定（与前端 isLockingFinalStatus / isOrderLocked 一致），用于强制“仅管理员可改锁定单”。
+// 服务端订单锁定判定（与前端 isLockingFinalStatus / isOrderLocked 一致），用于强制“仅本门户管理员可改锁定单”。
 function isLockingFinalStatus(status) {
   return ["已取走", "取消"].includes(normalizeStatus(status));
 }
@@ -50,18 +64,29 @@ function isOrderLockedRecord(repair, settings = {}) {
   }
   return true;
 }
-function assertFreshRepair(existing, expectedUpdatedAt) {
-  if (!existing || !expectedUpdatedAt) return;
+
+// 已有对象的更新 / 删除必须携带合法的 updatedAt：缺失 / 非法 400，过期 409，不允许绕过。
+function assertFreshRecord(existing, expectedUpdatedAt, label = "数据") {
+  if (!existing) return;
+  if (expectedUpdatedAt === undefined || expectedUpdatedAt === null || expectedUpdatedAt === "") {
+    throw badRequest(`缺少${label}版本（updatedAt），请刷新后重试`, "VERSION_REQUIRED");
+  }
   const expected = validDate(expectedUpdatedAt);
-  if (!expected) return;
+  if (!expected) throw badRequest(`${label}版本（updatedAt）格式不正确`, "INVALID_VERSION");
   if (existing.updatedAt.getTime() !== expected.getTime()) {
-    const error = new Error("数据已被更新，请刷新后重试");
-    error.status = 409;
-    throw error;
+    throw conflict(`${label}已被更新，请刷新后重试`, "VERSION_CONFLICT");
   }
 }
-async function orderLockSettings() {
-  const setting = await prisma.setting.findUnique({ where: { id: "main" } });
+
+// 服务端更新版本：至少为 max(当前时间, 旧 updatedAt + 1ms)，同毫秒连续写入也产生不同版本。
+function nextUpdatedAt(existing) {
+  const now = Date.now();
+  const previous = existing?.updatedAt instanceof Date ? existing.updatedAt.getTime() : 0;
+  return new Date(Math.max(now, previous + 1));
+}
+
+async function orderLockSettings(ctx, db = prisma) {
+  const setting = await db.setting.findUnique({ where: { portalId: ctx.portalId } });
   const value = setting?.value || {};
   return {
     enableOrderLock: value.enableOrderLock !== false,
@@ -69,48 +94,98 @@ async function orderLockSettings() {
   };
 }
 
-export async function getBootstrapData(options = {}) {
-  const includeRepairItems = options.includeRepairItems === true;
-  const includeRepairs = options.includeRepairs !== false;
-  const includeClients = options.includeClients !== false;
-  const repairInclude = includeRepairItems
-    ? { items: true, payments: { orderBy: { paidAt: "desc" } } }
-    : { payments: { orderBy: { paidAt: "desc" } } };
-  const repairQuery = includeRepairs ? prisma.repair.findMany({ include: repairInclude, orderBy: { createdAt: "desc" } }) : Promise.resolve([]);
-  const clientQuery = includeClients ? prisma.client.findMany({ orderBy: { createdAt: "desc" } }) : Promise.resolve([]);
-  const [staff, technicians, clients, brands, models, services, parts, groups, repairs, itemTotals, settings] = await Promise.all([
-    prisma.staff.findMany({ orderBy: { createdAt: "asc" } }),
-    prisma.technician.findMany({ orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
-    clientQuery,
-    prisma.brand.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
-    prisma.model.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
-    prisma.service.findMany({ orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
-    prisma.part.findMany({ orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
-    prisma.attributeGroup.findMany({ include: { attributes: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] } }, orderBy: { name: "asc" } }),
-    repairQuery,
-    includeRepairs && !includeRepairItems ? repairItemTotals() : Promise.resolve([]),
-    prisma.setting.findUnique({ where: { id: "main" } })
-  ]);
-  const totalsByRepair = new Map((itemTotals || []).map((row) => [row.repairId, row]));
-
-  const data = {
-    users: staff.map(({ passwordHash, sessionTokenHash, sessionExpiresAt, ...item }) => item),
-    technicians,
-    clients,
-    brands,
-    models,
-    services: services.map((item) => ({ ...item, category: item.category || "", price: moneyNumber(item.price) })),
-    parts: parts.map((item) => ({ ...item, category: item.category || "", price: moneyNumber(item.price) })),
-    attributes: groups.flatMap((group) => group.attributes.map((item) => ({ ...item, groupName: group.name }))),
-    settings: { ...defaultSettings, ...(settings?.value || {}) },
-    _settingsUpdatedAt: settings?.updatedAt?.toISOString?.() || "",
-    repairs: repairs.map((repair) => serializeRepair(repair, totalsByRepair.get(repair.id), includeRepairItems))
-  };
-  return { ...data, _revision: await getBusinessRevision() };
+export async function getPortalSettings(ctx, db = prisma) {
+  const portalId = requireCtx(ctx);
+  const setting = await db.setting.findUnique({ where: { portalId } });
+  return { settings: { ...defaultSettings, ...(setting?.value || {}) }, updatedAt: setting?.updatedAt?.toISOString?.() || "" };
 }
 
-export async function getRepairById(id) {
-  const repair = await prisma.repair.findUnique({ where: { id }, include: { client: true, items: true, payments: { orderBy: { paidAt: "desc" } } } });
+export async function getBusinessRevision(ctx, db = prisma) {
+  const portalId = requireCtx(ctx);
+  const portal = await db.portal.findUnique({ where: { id: portalId }, select: { revision: true } });
+  if (!portal) throw forbidden("没有权限访问该门户", "PORTAL_ACCESS_DENIED");
+  return portal.revision.toString();
+}
+
+// 当前门户成员（供员工页与开单技师选项）。非门户管理员只拿到本人。
+export async function listPortalUsers(ctx, db = prisma) {
+  const portalId = requireCtx(ctx);
+  const members = await db.portalMember.findMany({
+    where: { portalId },
+    include: { staff: { select: { id: true, name: true, username: true, email: true, createdAt: true } } }
+  });
+  return members
+    .sort((a, b) => a.staff.createdAt - b.staff.createdAt || a.staffId.localeCompare(b.staffId))
+    .map((member) => serializeMemberUser(member.staff, member));
+}
+
+// 轻量引导：只返回当前门户的目录 / 技师 / 设置 / 成员等小数据；维修单与客户不整包下发。
+// 业务数据与其 revision 必须来自同一个一致性快照：没有传 db（事务）时，整段读取放进一个只读事务
+// （MySQL REPEATABLE READ 在首次读取建立快照），避免“旧数据 + 新版本号”导致后续整组保存覆盖别人的修改。
+export async function getBootstrapData(ctx, options = {}) {
+  requireCtx(ctx);
+  if (!options.db) {
+    return prisma.$transaction((tx) => readBootstrapData(ctx, { ...options, db: tx }), { timeout: options.timeout || 60000 });
+  }
+  return readBootstrapData(ctx, options);
+}
+
+async function readBootstrapData(ctx, options = {}) {
+  const portalId = requireCtx(ctx);
+  const db = options.db;
+  const includeRepairs = options.includeRepairs === true;
+  const includeClients = options.includeClients === true;
+  const includeRepairItems = options.includeRepairItems === true;
+  const includeUsers = options.includeUsers !== false;
+  const repairInclude = includeRepairItems
+    ? { items: { orderBy: { createdAt: "asc" } }, payments: { orderBy: { paidAt: "desc" } } }
+    : { payments: { orderBy: { paidAt: "desc" } } };
+  const [users, technicians, clients, brands, models, services, parts, groups, repairs, itemTotals, setting, portal] = await Promise.all([
+    includeUsers ? listPortalUsers(ctx, db) : Promise.resolve([]),
+    db.technician.findMany({ where: { portalId }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
+    includeClients ? db.client.findMany({ where: { portalId }, orderBy: { createdAt: "desc" } }) : Promise.resolve([]),
+    db.brand.findMany({ where: { portalId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
+    db.model.findMany({ where: { portalId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
+    db.service.findMany({ where: { portalId }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
+    db.part.findMany({ where: { portalId }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
+    db.attributeGroup.findMany({ where: { portalId }, include: { attributes: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] } }, orderBy: { name: "asc" } }),
+    includeRepairs ? db.repair.findMany({ where: { portalId }, include: repairInclude, orderBy: { createdAt: "desc" } }) : Promise.resolve([]),
+    includeRepairs && !includeRepairItems ? repairItemTotals(ctx, db) : Promise.resolve([]),
+    db.setting.findUnique({ where: { portalId } }),
+    db.portal.findUnique({ where: { id: portalId }, select: { id: true, name: true, revision: true } })
+  ]);
+  if (!portal) throw forbidden("没有权限访问该门户", "PORTAL_ACCESS_DENIED");
+  const totalsByRepair = new Map((itemTotals || []).map((row) => [row.repairId, row]));
+
+  return {
+    portalId,
+    portal: { id: portal.id, name: portal.name },
+    users,
+    technicians: technicians.map(stripPortal),
+    clients: clients.map(stripPortal),
+    brands: brands.map(stripPortal),
+    models: models.map(stripPortal),
+    services: services.map((item) => ({ ...stripPortal(item), category: item.category || "", price: moneyNumber(item.price) })),
+    parts: parts.map((item) => ({ ...stripPortal(item), category: item.category || "", price: moneyNumber(item.price) })),
+    attributes: groups.flatMap((group) => group.attributes.map((item) => ({ ...stripPortal(item), groupName: group.name }))),
+    settings: { ...defaultSettings, ...(setting?.value || {}) },
+    _settingsUpdatedAt: setting?.updatedAt?.toISOString?.() || "",
+    repairs: repairs.map((repair) => serializeRepair(repair, totalsByRepair.get(repair.id), includeRepairItems)),
+    _revision: portal.revision.toString()
+  };
+}
+
+function stripPortal(row) {
+  if (!row || typeof row !== "object") return row;
+  const { portalId, ...rest } = row;
+  return rest;
+}
+
+export async function getRepairById(ctx, id) {
+  const portalId = requireCtx(ctx);
+  const repairId = String(id || "").trim();
+  if (!repairId) return null;
+  const repair = await prisma.repair.findFirst({ where: { id: repairId, portalId }, include: { client: true, items: { orderBy: { createdAt: "asc" } }, payments: { orderBy: { paidAt: "desc" } } } });
   return repair ? serializeRepair(repair, null, true) : null;
 }
 
@@ -134,9 +209,27 @@ function statusRawSql(status) {
   return Prisma.sql`r.status IN (${Prisma.join(aliases)})`;
 }
 
-// 服务端维修单搜索：searchText 子串匹配（与前端“包含”一致）+ 结构化过滤（走索引）+ 服务端分页。
-// 返回当页序列化维修单、总数、按状态/类型的计数，用于列表页直接渲染，避免前端全表扫描 4 万单。
-export async function searchRepairs(params = {}) {
+function parsePage(value, fallback = 1) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const text = String(value).trim();
+  if (!/^\d+$/.test(text)) throw badRequest("页码必须是正整数");
+  const number = Number(text);
+  if (!Number.isSafeInteger(number) || number < 1) throw badRequest("页码必须是正整数");
+  return number;
+}
+
+function parsePageSize(value, fallback, max = 100) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const text = String(value).trim();
+  if (!/^\d+$/.test(text)) throw badRequest("pageSize 必须是正整数");
+  const number = Number(text);
+  if (!Number.isSafeInteger(number) || number < 1) throw badRequest("pageSize 必须是正整数");
+  return Math.min(max, number);
+}
+
+// 服务端维修单搜索：searchText 子串匹配（与前端“包含”一致）+ 结构化过滤（走索引）+ 服务端分页，全部限定当前门户。
+export async function searchRepairs(ctx, params = {}) {
+  const portalId = requireCtx(ctx);
   const q = String(params.q || "").trim().toLowerCase();
   const status = String(params.status || "").trim();
   const orderType = String(params.orderType || "").trim();
@@ -145,19 +238,19 @@ export async function searchRepairs(params = {}) {
   const clientId = String(params.clientId || "").trim();
   const sourceRepairId = String(params.sourceRepairId || "").trim();
   const technicianKey = String(params.technicianKey || "").trim();
-  const page = Math.max(1, Number(params.page) || 1);
-  const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || SEARCH_PAGE_SIZE));
+  const page = parsePage(params.page);
+  const pageSize = parsePageSize(params.pageSize, SEARCH_PAGE_SIZE);
 
-  const baseFilters = [];
+  const baseFilters = [{ portalId }];
   if (q) baseFilters.push({ searchText: { contains: q } });
   if (orderType) baseFilters.push({ orderType });
   if (clientId) baseFilters.push({ clientId });
   if (sourceRepairId) baseFilters.push({ sourceRepairId });
-  if (technicianKey) baseFilters.push(await technicianKeyFilter(technicianKey));
+  if (technicianKey) baseFilters.push(await technicianKeyFilter(ctx, technicianKey));
   if (start) baseFilters.push({ repairTime: { gte: start } });
   // repairTime 形如 "YYYY-MM-DD HH:mm"；"~"(0x7E) 大于空格与数字，故 <= end+"~" 含 end 当天全部时间且不含次日。
   if (end) baseFilters.push({ repairTime: { lte: `${end}~` } });
-  const baseWhere = baseFilters.length ? { AND: baseFilters } : {};
+  const baseWhere = { AND: baseFilters };
   const where = status ? { AND: [...baseFilters, statusWhere(status)] } : baseWhere;
 
   const [total, statusGroups, typeGroups, pageRows] = await Promise.all([
@@ -178,7 +271,7 @@ export async function searchRepairs(params = {}) {
 
   const ids = pageRows.map((row) => row.id);
   const items = ids.length
-    ? await prisma.repairItem.findMany({ where: { repairId: { in: ids } }, orderBy: { createdAt: "asc" } })
+    ? await prisma.repairItem.findMany({ where: { repairId: { in: ids }, repair: { portalId } }, orderBy: { createdAt: "asc" } })
     : [];
   const totalsByRepair = new Map();
   for (const item of items) {
@@ -212,22 +305,20 @@ export async function searchRepairs(params = {}) {
   };
 }
 
-// 客户列表页：服务端搜索 + 每客户维修统计（总数/未完结数/最近一单）+ 排序 + 分页。
-// 口径与前端 ClientsPage 一致：未完结 = 状态归一后不是「已取走/取消」；
-// 最近一单按 (repairTime 为空则回退 ticket) 字符串降序。
+// 客户列表页：服务端搜索 + 每客户维修统计 + 排序 + 分页，全部限定当前门户。
 const OPEN_EXCLUDED_STATUSES = ["已取走", "Entregado", "取消", "Cerrado", "Cancelar", "关闭", "拒保"];
 
-export async function searchClients(params = {}) {
+export async function searchClients(ctx, params = {}) {
+  const portalId = requireCtx(ctx);
   const q = String(params.q || "").trim().toLowerCase();
   const clientId = String(params.clientId || "").trim();
   const phone = String(params.phone || "").trim();
   const filter = String(params.filter || "all");
   const sort = String(params.sort || "latest");
-  const page = Math.max(1, Number(params.page) || 1);
-  const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20));
+  const page = parsePage(params.page);
+  const pageSize = parsePageSize(params.pageSize, 20);
 
-  // 只作用于 Client 表本身的条件（q/clientId/phone），也用于把统计子查询窄化到候选客户。
-  const clientConds = [Prisma.sql`1 = 1`];
+  const clientConds = [Prisma.sql`c.portalId = ${portalId}`];
   if (q) clientConds.push(Prisma.sql`LOWER(CONCAT_WS(' ', c.name, c.identity, c.email, c.phone, c.address)) LIKE ${`%${likePattern(q)}%`}`);
   if (clientId) clientConds.push(Prisma.sql`c.id = ${clientId}`);
   if (phone) clientConds.push(Prisma.sql`c.phone = ${phone}`);
@@ -247,14 +338,13 @@ export async function searchClients(params = {}) {
         ? Prisma.sql`c.name ASC`
         : Prisma.sql`COALESCE(s.latestSortKey, '') DESC, COALESCE(s.repairTotal, 0) DESC, c.name ASC`;
 
-  // 统计只对候选客户做 GROUP BY，避免每次搜索都全表聚合。
   const statsSql = Prisma.sql`
     SELECT clientId,
            COUNT(*) AS repairTotal,
            COALESCE(SUM(status COLLATE utf8mb4_bin NOT IN (${Prisma.join(OPEN_EXCLUDED_STATUSES)})), 0) AS openTotal,
            MAX(CASE WHEN COALESCE(repairTime, '') <> '' THEN repairTime ELSE ticket END) AS latestSortKey
     FROM Repair
-    WHERE clientId IN (SELECT c.id FROM Client c WHERE ${clientCondSql})
+    WHERE portalId = ${portalId} AND clientId IN (SELECT c.id FROM Client c WHERE ${clientCondSql})
     GROUP BY clientId
   `;
 
@@ -263,7 +353,7 @@ export async function searchClients(params = {}) {
       SELECT COUNT(*) AS total FROM Client c LEFT JOIN (${statsSql}) s ON s.clientId = c.id WHERE ${whereSql}
     `),
     prisma.$queryRaw(Prisma.sql`
-      SELECT c.id, c.name, c.docType, c.identity, c.email, c.phone, c.address, c.comment, c.level,
+      SELECT c.id, c.name, c.docType, c.identity, c.email, c.phone, c.address, c.comment, c.level, c.updatedAt,
              COALESCE(s.repairTotal, 0) AS repairTotal, COALESCE(s.openTotal, 0) AS openTotal
       FROM Client c LEFT JOIN (${statsSql}) s ON s.clientId = c.id
       WHERE ${whereSql} ORDER BY ${orderSql}
@@ -271,14 +361,13 @@ export async function searchClients(params = {}) {
     `)
   ]);
 
-  // 当页客户的「最近一单」：窗口函数按每客户取第一条，只查当页涉及的客户。
   const clientIds = rows.map((row) => row.id);
   const latestRows = clientIds.length
     ? await prisma.$queryRaw(Prisma.sql`
         SELECT id, clientId, ticket, brand, model, status, repairTime FROM (
           SELECT r.id, r.clientId, r.ticket, r.brand, r.model, r.status, r.repairTime,
                  ROW_NUMBER() OVER (PARTITION BY r.clientId ORDER BY (CASE WHEN COALESCE(r.repairTime, '') <> '' THEN r.repairTime ELSE r.ticket END) DESC) AS rowNo
-          FROM Repair r WHERE r.clientId IN (${Prisma.join(clientIds)})
+          FROM Repair r WHERE r.portalId = ${portalId} AND r.clientId IN (${Prisma.join(clientIds)})
         ) ranked WHERE rowNo = 1
       `)
     : [];
@@ -295,6 +384,7 @@ export async function searchClients(params = {}) {
       address: row.address,
       comment: row.comment,
       level: row.level,
+      updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
       stats: {
         total: Number(row.repairTotal || 0),
         open: Number(row.openTotal || 0),
@@ -307,36 +397,31 @@ export async function searchClients(params = {}) {
   };
 }
 
-// 删除某个「历史维修师」（不在册、仅按姓名记录）名下的全部维修单。
-// 只允许 name: 前缀且姓名非空的历史桶：空姓名会命中「未分配」桶，等于误删无技师的单。
-// 与单删接口保持同一条业务约束：名下有单已被（桶外的）保修单引用时拒绝删除。
-export async function deleteTechnicianHistory(technicianKey) {
+// 删除某个「历史维修师」（不在册、仅按姓名记录）名下的全部维修单（当前门户）。
+export async function deleteTechnicianHistory(ctx, technicianKey) {
+  const portalId = requireCtx(ctx);
   const key = String(technicianKey || "").trim();
-  if (!key.startsWith("name:")) throwBadRequest("只能删除历史维修师的记录");
-  if (!key.slice(5).trim()) throwBadRequest("必须指定要删除的历史维修师姓名");
-  const where = await technicianKeyFilter(key);
-  const result = await prisma.$transaction(async (tx) => {
+  if (!key.startsWith("name:")) throw badRequest("只能删除历史维修师的记录");
+  if (!key.slice(5).trim()) throw badRequest("必须指定要删除的历史维修师姓名");
+  const { result, revision } = await withPortalWrite(ctx, { timeout: 60000 }, async (tx) => {
+    const where = { AND: [{ portalId }, await technicianKeyFilter(ctx, key, tx)] };
     const targets = await tx.repair.findMany({ where, select: { id: true } });
     if (!targets.length) return { count: 0 };
     const ids = targets.map((row) => row.id);
-    const linked = await tx.repair.count({ where: { orderType: "warranty", sourceRepairId: { in: ids }, id: { notIn: ids } } });
-    if (linked) {
-      const error = new Error("该维修师名下有维修单已创建保修单，不能删除");
-      error.status = 409;
-      throw error;
-    }
-    return tx.repair.deleteMany({ where: { id: { in: ids } } });
-  }, { timeout: 60000 });
-  return { ok: true, deleted: result.count, _revisionPatch: await getRevisionPatch(["repairs"]) };
+    const linked = await tx.repair.count({ where: { portalId, orderType: "warranty", sourceRepairId: { in: ids }, id: { notIn: ids } } });
+    if (linked) throw conflict("该维修师名下有维修单已创建保修单，不能删除", "LINKED_WARRANTY");
+    return tx.repair.deleteMany({ where: { portalId, id: { in: ids } } });
+  });
+  return { ok: true, deleted: result.count, _revision: revision };
 }
 
-// 扫码/快速开单：候选值（原文、票号数字、URL 片段）精确匹配 ticket / publicToken / id，
-// 全部走唯一索引；口径与前端 findRepairByTicket/scanCandidates 一致。
-export async function lookupRepairByScan(rawValue) {
+// 扫码/快速开单：候选值精确匹配当前门户的 ticket / publicToken / id。
+export async function lookupRepairByScan(ctx, rawValue) {
+  const portalId = requireCtx(ctx);
   const candidates = scanLookupCandidates(rawValue);
   if (!candidates.length) return null;
   const repair = await prisma.repair.findFirst({
-    where: { OR: [{ ticket: { in: candidates } }, { publicToken: { in: candidates } }, { id: { in: candidates } }] },
+    where: { portalId, OR: [{ ticket: { in: candidates } }, { publicToken: { in: candidates } }, { id: { in: candidates } }] },
     select: { id: true, ticket: true, orderType: true }
   });
   return repair || null;
@@ -373,12 +458,10 @@ function scanLookupCandidates(rawValue) {
   return [...candidates];
 }
 
-// 技师筛选口径与前端 repairMatchesTechnicianKey 完全一致：
-// - "unassigned"：technicianId 不是在册技师，且 technicianName 为空
-// - "id:<技师id>"：technicianId 精确匹配，或（technicianId 不在册且 technicianName 等于该技师姓名，兼容历史单）
-// - "name:<历史姓名>"：technicianId 不在册且 technicianName 等于该姓名（MySQL 排序规则天然忽略大小写）
-async function technicianKeyFilter(technicianKey) {
-  const technicians = await prisma.technician.findMany({ select: { id: true, name: true } });
+// 技师筛选口径与前端 repairMatchesTechnicianKey 一致，在册技师只取当前门户。
+async function technicianKeyFilter(ctx, technicianKey, db = prisma) {
+  const portalId = requireCtx(ctx);
+  const technicians = await db.technician.findMany({ where: { portalId }, select: { id: true, name: true } });
   const knownIds = technicians.map((technician) => technician.id);
   const notKnownTechnician = knownIds.length ? { OR: [{ technicianId: "" }, { technicianId: { notIn: knownIds } }] } : {};
   if (technicianKey === "unassigned") return { AND: [notKnownTechnician, { technicianName: "" }] };
@@ -391,14 +474,12 @@ async function technicianKeyFilter(technicianKey) {
   if (technicianKey.startsWith("name:")) {
     return { AND: [notKnownTechnician, { technicianName: technicianKey.slice(5) }] };
   }
-  // 未知格式：不产生任何命中，避免误返回全表
   return { id: "" };
 }
 
-// 列表页的「合计金额 / 技师汇总」：基于与 searchRepairs 相同的筛选集（含 imei/properties/证件号），
-// 在服务端用一条 JOIN 聚合出每单的 itemsTotal/itemsCostTotal，再按金额规则汇总，保证与列表口径一致。
-// 不分页（覆盖整个筛选集），也不依赖 page，避免翻页时重算。
-export async function aggregateRepairs(params = {}) {
+// 列表页的「合计金额 / 技师汇总」：与 searchRepairs 相同筛选集，SQL 聚合，限定当前门户。
+export async function aggregateRepairs(ctx, params = {}) {
+  const portalId = requireCtx(ctx);
   const q = String(params.q || "").trim().toLowerCase();
   const status = String(params.status || "").trim();
   const orderType = String(params.orderType || "").trim();
@@ -408,20 +489,17 @@ export async function aggregateRepairs(params = {}) {
   const sourceRepairId = String(params.sourceRepairId || "").trim();
   const technicianKey = String(params.technicianKey || "").trim();
 
-  const conds = [Prisma.sql`1 = 1`];
+  const conds = [Prisma.sql`r.portalId = ${portalId}`];
   if (q) conds.push(Prisma.sql`r.searchText LIKE ${`%${likePattern(q)}%`}`);
   if (status) conds.push(statusRawSql(status));
   if (orderType) conds.push(Prisma.sql`r.orderType = ${orderType}`);
   if (clientId) conds.push(Prisma.sql`r.clientId = ${clientId}`);
   if (sourceRepairId) conds.push(Prisma.sql`r.sourceRepairId = ${sourceRepairId}`);
-  if (technicianKey) conds.push(await technicianKeyRawSql(technicianKey));
+  if (technicianKey) conds.push(await technicianKeyRawSql(ctx, technicianKey));
   if (start) conds.push(Prisma.sql`r.repairTime >= ${start}`);
   if (end) conds.push(Prisma.sql`r.repairTime <= ${`${end}~`}`);
   const whereSql = Prisma.join(conds, " AND ");
 
-  // 全部聚合在 SQL 完成（应用内存只有每技师一行的分组结果）。金额口径与前端一致：
-  // charge = 保修不收费 ? 0 : max(0, (有明细行 ? 明细合计 : 预算) - 折扣)；cost = 明细成本>0 ? 明细成本 : 成本。
-  // 状态判定按原始值精确匹配（COLLATE utf8mb4_bin），与前端 normalizeStatus 的映射口径一致。
   const derivedSql = Prisma.sql`
     SELECT r.technicianId, r.technicianName COLLATE utf8mb4_bin AS technicianName, r.orderType,
            (r.status COLLATE utf8mb4_bin IN (${Prisma.join(AGG_CANCELED_STATUSES)})) AS canceled,
@@ -430,7 +508,7 @@ export async function aggregateRepairs(params = {}) {
                 ELSE GREATEST(0, (CASE WHEN COALESCE(i.itemsCount, 0) > 0 THEN COALESCE(i.itemsTotal, 0) ELSE r.budget END) - r.discountAmount) END AS charge,
            CASE WHEN COALESCE(i.itemsCostTotal, 0) > 0 THEN i.itemsCostTotal ELSE r.costAmount END AS cost
     FROM Repair r
-    LEFT JOIN (SELECT repairId, COUNT(*) AS itemsCount, SUM(qty * price) AS itemsTotal, SUM(qty * cost) AS itemsCostTotal FROM RepairItem GROUP BY repairId) i ON i.repairId = r.id
+    LEFT JOIN (${repairItemTotalsSql(portalId)}) i ON i.repairId = r.id
     WHERE ${whereSql}`;
 
   const [groups, technicians] = await Promise.all([
@@ -444,10 +522,9 @@ export async function aggregateRepairs(params = {}) {
       FROM (${derivedSql}) d
       GROUP BY d.technicianId, d.technicianName
     `),
-    prisma.technician.findMany()
+    prisma.technician.findMany({ where: { portalId } })
   ]);
 
-  // JS 只负责把（技师 id / 历史姓名）小分组归并成前端桶，口径同旧 computeListAggregates。
   const technicianById = new Map(technicians.map((technician) => [technician.id, technician]));
   const technicianByName = new Map();
   for (const technician of technicians) {
@@ -486,14 +563,20 @@ export async function aggregateRepairs(params = {}) {
   return { totals, technicianRows, businessCount, openCount };
 }
 
-// normalizeStatus 会归一为「取消 / 已取走」的全部原始值（含旧数据的西语/别名）。
 const AGG_CANCELED_STATUSES = ["取消", "Cerrado", "Cancelar", "关闭", "拒保"];
 const AGG_LOCKED_STATUSES = ["已取走", "Entregado", ...AGG_CANCELED_STATUSES];
 
+// 明细合计子查询：只统计当前门户父单下的明细（子表没有 portalId，经父单 JOIN 限定）。
+export function repairItemTotalsSql(portalId) {
+  return Prisma.sql`
+    SELECT ri.repairId, COUNT(*) AS itemsCount, SUM(ri.qty * ri.price) AS itemsTotal, SUM(ri.qty * ri.cost) AS itemsCostTotal
+    FROM RepairItem ri JOIN Repair rp ON rp.id = ri.repairId AND rp.portalId = ${portalId}
+    GROUP BY ri.repairId`;
+}
 
-// technicianKey 的原生 SQL 版本（口径同 technicianKeyFilter / 前端 repairMatchesTechnicianKey）。
-async function technicianKeyRawSql(technicianKey) {
-  const technicians = await prisma.technician.findMany({ select: { id: true, name: true } });
+async function technicianKeyRawSql(ctx, technicianKey) {
+  const portalId = requireCtx(ctx);
+  const technicians = await prisma.technician.findMany({ where: { portalId }, select: { id: true, name: true } });
   const knownIds = technicians.map((technician) => technician.id);
   const notKnown = knownIds.length
     ? Prisma.sql`(r.technicianId = '' OR r.technicianId NOT IN (${Prisma.join(knownIds)}))`
@@ -511,23 +594,19 @@ async function technicianKeyRawSql(technicianKey) {
   return Prisma.sql`1 = 0`;
 }
 
-async function repairItemTotals() {
-  const url = String(process.env.DATABASE_URL || "");
-  if (!url.startsWith("mysql://")) {
-    throw new Error("RepairNOTE 现在只支持 MySQL/MariaDB，请设置 DATABASE_URL=mysql://...");
-  }
-  // MySQL / MariaDB。标识符大小写敏感（Linux），保持与 Prisma 建表一致。
-  return prisma.$queryRawUnsafe(
-    "SELECT repairId," +
-    " CAST(COALESCE(SUM(qty * price), 0) AS CHAR) AS itemsTotal," +
-    " CAST(COALESCE(SUM(qty * cost), 0) AS CHAR) AS itemsCostTotal," +
-    " CAST(COUNT(*) AS CHAR) AS itemsCount," +
-    " GROUP_CONCAT(NULLIF(name, '') ORDER BY createdAt ASC SEPARATOR '，') AS itemsSummary" +
-    " FROM RepairItem GROUP BY repairId"
-  );
+async function repairItemTotals(ctx, db = prisma) {
+  const portalId = requireCtx(ctx);
+  return db.$queryRaw(Prisma.sql`
+    SELECT ri.repairId,
+           CAST(COALESCE(SUM(ri.qty * ri.price), 0) AS CHAR) AS itemsTotal,
+           CAST(COALESCE(SUM(ri.qty * ri.cost), 0) AS CHAR) AS itemsCostTotal,
+           CAST(COUNT(*) AS CHAR) AS itemsCount,
+           GROUP_CONCAT(NULLIF(ri.name, '') ORDER BY ri.createdAt ASC SEPARATOR '，') AS itemsSummary
+    FROM RepairItem ri JOIN Repair rp ON rp.id = ri.repairId AND rp.portalId = ${portalId}
+    GROUP BY ri.repairId`);
 }
 
-function serializeRepair(repair, totals = null, includeItems = false) {
+export function serializeRepair(repair, totals = null, includeItems = false) {
   const itemRows = Array.isArray(repair.items) ? repair.items : [];
   const computedItemsTotal = includeItems ? itemRows.reduce((sum, item) => sum + moneyNumber(item.qty) * moneyNumber(item.price), 0) : 0;
   const computedItemsCostTotal = includeItems ? itemRows.reduce((sum, item) => sum + moneyNumber(item.qty) * moneyNumber(item.cost), 0) : 0;
@@ -577,8 +656,8 @@ function serializeRepair(repair, totals = null, includeItems = false) {
       : []
   };
   if (!includeItems) return shared;
-  // ticketSort 是 BigInt（无法 JSON 序列化），searchText 是内部检索字段（最长 8000 字），都不应回传/写入备份。
-  const { ticketSort, searchText, client: _client, ...repairRest } = repair;
+  // ticketSort 是 BigInt（无法 JSON 序列化），searchText 是内部检索字段，portalId 是归属字段，都不应回传 / 写入备份。
+  const { ticketSort, searchText, client: _client, portalId: _portalId, ...repairRest } = repair;
   return {
     ...repairRest,
     ...shared,
@@ -643,28 +722,58 @@ function mergeCompactRepairForReplace(preservedRepair, repair) {
   return merged;
 }
 
-export async function saveRepairRecord({ repair, client, actor } = {}) {
-  if (!repair?.id) throwBadRequest("维修单数据不完整");
-  const lockSettings = await orderLockSettings();
-  const result = await prisma.$transaction(async (tx) => {
+// 技师引用校验：非空 technicianId 必须是本门户在册技师，或本门户成员派生的 staff_<staffId>。
+async function assertTechnicianReference(ctx, tx, technicianId) {
+  const value = String(technicianId || "").trim();
+  if (!value) return;
+  if (value.startsWith("staff_")) {
+    const member = await tx.portalMember.findUnique({ where: { staffId_portalId: { staffId: value.slice(6), portalId: ctx.portalId } }, select: { staffId: true } });
+    if (!member) throw badRequest("维修师不属于当前门户", "INVALID_REFERENCE");
+    return;
+  }
+  const technician = await tx.technician.findFirst({ where: { id: value, portalId: ctx.portalId }, select: { id: true } });
+  if (!technician) throw badRequest("维修师不属于当前门户", "INVALID_REFERENCE");
+}
+
+export async function saveRepairRecord(ctx, { repair, client, createOnly = false } = {}) {
+  const portalId = requireCtx(ctx);
+  if (!repair?.id || typeof repair.id !== "string") throw badRequest("维修单数据不完整");
+  if (repair.portalId !== undefined && repair.portalId !== portalId) throw badRequest("请求中的门户与当前门户不一致", "PORTAL_MISMATCH");
+  if (client?.portalId !== undefined && client.portalId !== portalId) throw badRequest("请求中的门户与当前门户不一致", "PORTAL_MISMATCH");
+  const { result, revision } = await withPortalWrite(ctx, {}, async (tx, { member }) => {
+    const lockSettings = await orderLockSettings(ctx, tx);
     let savedClient = null;
     if (client?.id) {
-      const clientName = clientNameForSave(client.name);
-      savedClient = await tx.client.upsert({
-        where: { id: client.id },
-        create: { id: client.id, name: clientName, docType: client.docType || "DNI", identity: client.identity || "", email: client.email || "", phone: client.phone || "", address: client.address || "", comment: client.comment || "", level: normalizeClientLevel(client.level) },
-        update: { name: clientName, docType: client.docType || "DNI", identity: client.identity || "", email: client.email || "", phone: client.phone || "", address: client.address || "", comment: client.comment || "", level: normalizeClientLevel(client.level) }
-      });
+      const clientId = String(client.id);
+      const existingClient = await tx.client.findUnique({ where: { id: clientId } });
+      if (existingClient && existingClient.portalId !== portalId) throw notFound("没有找到客户", "CLIENT_NOT_FOUND");
+      const clientData = { name: clientNameForSave(client.name), docType: client.docType || "DNI", identity: client.identity || "", email: client.email || "", phone: client.phone || "", address: client.address || "", comment: client.comment || "", level: normalizeClientLevel(client.level) };
+      if (!existingClient) {
+        savedClient = await tx.client.create({ data: { id: clientId, portalId, ...clientData } });
+      } else if (client.updatedAt !== undefined && client.updatedAt !== null && client.updatedAt !== "") {
+        assertFreshRecord(existingClient, client.updatedAt, "客户");
+        savedClient = await tx.client.update({ where: { id: clientId }, data: { ...clientData, updatedAt: nextUpdatedAt(existingClient) } });
+      } else {
+        // 只是引用已有客户：不重写客户资料
+        savedClient = existingClient;
+      }
     }
 
-    const existing = await tx.repair.findUnique({ where: { id: repair.id }, include: { items: true, payments: true } });
-    assertFreshRepair(existing, repair.updatedAt);
-    // 服务端强制：库里这张单若已锁定（已取走/取消且未解锁），只有管理员且开启「允许解除订单锁定」才能修改，
-    // 防止普通员工绕过前端直接 PUT 篡改已锁定订单。
-    if (existing && isOrderLockedRecord(existing, lockSettings) && !(actor?.isAdmin && lockSettings.allowOrderUnlock)) {
-      const error = new Error("订单已锁定，只有管理员可以解除锁定后再修改");
-      error.status = 403;
-      throw error;
+    const existing = await tx.repair.findFirst({ where: { id: repair.id, portalId }, include: { items: true, payments: true } });
+    if (createOnly && existing) throw conflict("这张维修单已存在，请刷新后重试", "ALREADY_EXISTS");
+    if (!createOnly && !existing) {
+      const foreign = await tx.repair.findUnique({ where: { id: repair.id }, select: { id: true } });
+      if (foreign) throw notFound("没有找到这张订单", "REPAIR_NOT_FOUND");
+      throw notFound("这张维修单已被删除或不存在，请刷新后重试", "REPAIR_NOT_FOUND");
+    }
+    if (createOnly) {
+      const foreign = await tx.repair.findUnique({ where: { id: repair.id }, select: { id: true } });
+      if (foreign) throw conflict("维修单编号已被使用，请刷新后重试", "ALREADY_EXISTS");
+    }
+    if (existing) assertFreshRecord(existing, repair.updatedAt, "维修单");
+    // 服务端强制：库里这张单若已锁定（已取走/取消且未解锁），只有本门户管理员且开启「允许解除订单锁定」才能修改。
+    if (existing && isOrderLockedRecord(existing, lockSettings) && !(member.isAdmin && lockSettings.allowOrderUnlock)) {
+      throw forbidden("订单已锁定，只有管理员可以解除锁定后再修改", "ORDER_LOCKED");
     }
     const existingRepair = existing ? serializeRepair(existing, null, true) : null;
     const repairData = { ...(existingRepair || {}), ...repair, clientId: repair.clientId || savedClient?.id || existingRepair?.clientId || "" };
@@ -675,55 +784,58 @@ export async function saveRepairRecord({ repair, client, actor } = {}) {
       repairData.statusHistory = mergeJsonRows(existingRepair.statusHistory, repair.statusHistory);
       repairData.notificationLog = mergeJsonRows(existingRepair.notificationLog, repair.notificationLog);
     }
-    if (!repairData.clientId) throwBadRequest("维修单缺少客户");
+    if (!repairData.clientId) throw badRequest("维修单缺少客户");
+    const searchClient = savedClient?.id === repairData.clientId ? savedClient : await tx.client.findFirst({ where: { id: repairData.clientId, portalId } });
+    if (!searchClient) throw notFound("没有找到客户", "CLIENT_NOT_FOUND");
+    // 技师引用只在新建或技师发生变化时校验：已有订单保留历史技师归属（含已移出门户的员工），只改备注 / 状态不受影响。
+    if (!existing || String(repairData.technicianId || "") !== String(existing.technicianId || "")) {
+      await assertTechnicianReference(ctx, tx, repairData.technicianId);
+    }
     const repairItems = repair.itemsLoaded === false && existing ? existing.items : (Array.isArray(repair.items) ? repair.items : []);
     const paymentCreates = repairPaymentsForSave(repairData, existing?.payments || []);
-    const searchClient = savedClient || (repairData.clientId ? await tx.client.findUnique({ where: { id: repairData.clientId } }) : null);
     let sourceTicket = "";
     if ((repairData.orderType || "repair") === "warranty" && repairData.sourceRepairId) {
-      const source = await tx.repair.findUnique({ where: { id: repairData.sourceRepairId }, select: { ticket: true } });
-      sourceTicket = source?.ticket || "";
+      const source = await tx.repair.findFirst({ where: { id: repairData.sourceRepairId, portalId }, select: { ticket: true } });
+      if (!source) throw badRequest("保修来源订单不存在或不属于当前门户", "INVALID_REFERENCE");
+      sourceTicket = source.ticket || "";
+    } else if (repairData.sourceRepairId) {
+      const source = await tx.repair.findFirst({ where: { id: repairData.sourceRepairId, portalId }, select: { id: true } });
+      if (!source) throw badRequest("来源订单不存在或不属于当前门户", "INVALID_REFERENCE");
     }
     const searchText = buildRepairSearchText(repairData, { client: searchClient || {}, items: repairItems, sourceTicket });
     const dbData = { ...repairPrismaData(repairData), deposit: paymentCreates.length ? depositPaymentTotal(paymentCreates) : dbMoney(repairData.deposit), searchText, ticketSort: BigInt(ticketSortValue(repairTicket(repairData))) };
     const itemCreates = repairItems.map(repairItemPrismaData);
     const repairInclude = { client: true, items: true, payments: { orderBy: { paidAt: "desc" } } };
     const savedRepair = existing
-      ? await tx.repair.update({ where: { id: repair.id }, data: { ...dbData, items: { deleteMany: {}, create: itemCreates }, payments: { deleteMany: {}, create: paymentCreates.map(paymentPrismaData) } }, include: repairInclude })
-      : await tx.repair.create({ data: { id: repair.id, ...dbData, items: { create: itemCreates }, payments: { create: paymentCreates.map(paymentPrismaData) } }, include: repairInclude });
+      ? await tx.repair.update({ where: { id: repair.id }, data: { ...dbData, updatedAt: nextUpdatedAt(existing), items: { deleteMany: {}, create: itemCreates }, payments: { deleteMany: {}, create: paymentCreates.map(paymentPrismaData) } }, include: repairInclude })
+      : await tx.repair.create({ data: { id: repair.id, portalId, ...dbData, items: { create: itemCreates }, payments: { create: paymentCreates.map(paymentPrismaData) } }, include: repairInclude });
     return { repair: savedRepair, client: savedClient };
   });
   return {
     repair: serializeRepair(result.repair, null, true),
-    client: result.client,
-    _revision: await getBusinessRevision()
+    client: result.client ? stripPortal(result.client) : null,
+    _revision: revision
   };
 }
 
-export async function deleteRepairRecord(id, options = {}) {
-  const existing = await prisma.repair.findUnique({ where: { id } });
-  if (!existing) {
-    const error = new Error("没有找到这张订单");
-    error.status = 404;
-    throw error;
-  }
-  assertFreshRepair(existing, options.updatedAt);
-  const lockSettings = await orderLockSettings();
-  if (isOrderLockedRecord(existing, lockSettings) && !(options.actor?.isAdmin && lockSettings.allowOrderUnlock)) {
-    const error = new Error("订单已锁定，只有管理员可以解除锁定后再删除");
-    error.status = 403;
-    throw error;
-  }
-  if ((existing.orderType || "repair") !== "warranty") {
-    const linkedWarrantyCount = await prisma.repair.count({ where: { orderType: "warranty", sourceRepairId: id } });
-    if (linkedWarrantyCount) {
-      const error = new Error("这张维修单已有保修单，不能删除");
-      error.status = 409;
-      throw error;
+export async function deleteRepairRecord(ctx, id, options = {}) {
+  const portalId = requireCtx(ctx);
+  const { revision } = await withPortalWrite(ctx, {}, async (tx, { member }) => {
+    const existing = await tx.repair.findFirst({ where: { id: String(id || ""), portalId } });
+    if (!existing) throw notFound("没有找到这张订单", "REPAIR_NOT_FOUND");
+    assertFreshRecord(existing, options.updatedAt, "维修单");
+    const lockSettings = await orderLockSettings(ctx, tx);
+    if (isOrderLockedRecord(existing, lockSettings) && !(member.isAdmin && lockSettings.allowOrderUnlock)) {
+      throw forbidden("订单已锁定，只有管理员可以解除锁定后再删除", "ORDER_LOCKED");
     }
-  }
-  await prisma.repair.delete({ where: { id } });
-  return { ok: true, _revision: await getBusinessRevision() };
+    if ((existing.orderType || "repair") !== "warranty") {
+      const linkedWarrantyCount = await tx.repair.count({ where: { portalId, orderType: "warranty", sourceRepairId: existing.id } });
+      if (linkedWarrantyCount) throw conflict("这张维修单已有保修单，不能删除", "LINKED_WARRANTY");
+    }
+    await tx.repair.delete({ where: { id: existing.id } });
+    return { ok: true };
+  });
+  return { ok: true, _revision: revision };
 }
 
 function repairPrismaData(repairData) {
@@ -810,11 +922,6 @@ function isDepositAdjustment(payment = {}) {
   return note.includes("订金调整") || note.includes("ajuste de depósito") || note.includes("ajuste de deposito") || note.includes("depósito ajustado") || note.includes("deposito ajustado");
 }
 
-function isManualPaymentAdjustment(payment = {}) {
-  const note = paymentNote(payment);
-  return note.includes("手动收款调整") || note.includes("手动退款调整");
-}
-
 function normalizeRepairPaymentMethod(method) {
   const value = String(method || "").trim().toLowerCase();
   return ["none", "cash", "card"].includes(value) ? value : "none";
@@ -872,64 +979,55 @@ function validPaymentDate(value) {
   return date && !Number.isNaN(date.getTime()) ? date.toISOString() : new Date().toISOString();
 }
 
-const REVISION_KEYS = ["users", "technicians", "clients", "brands", "models", "services", "parts", "attributes", "repairs", "settings"];
-
-export async function getBusinessRevision(db = prisma) {
-  const patch = await getRevisionPatch(REVISION_KEYS, db);
-  return REVISION_KEYS.map((key) => patch[key]).join("|");
+function chunk(list, size = ID_CHUNK) {
+  const chunks = [];
+  for (let index = 0; index < list.length; index += size) chunks.push(list.slice(index, index + size));
+  return chunks;
 }
 
-export async function getRevisionPatch(keys = [], db = prisma) {
-  const uniqueKeys = [...new Set(keys)].filter((key) => REVISION_KEYS.includes(key));
-  const entries = await Promise.all(uniqueKeys.map(async (key) => [key, await getRevisionSegment(key, db)]));
-  return Object.fromEntries(entries);
-}
-
-async function getRevisionSegment(key, db = prisma) {
-  if (key === "users") return revisionPart("users", await revisionAggregate(db.staff));
-  if (key === "technicians") return revisionPart("technicians", await revisionAggregate(db.technician));
-  if (key === "clients") return revisionPart("clients", await revisionAggregate(db.client));
-  if (key === "brands") return revisionPart("brands", await revisionAggregate(db.brand));
-  if (key === "models") return revisionPart("models", await revisionAggregate(db.model));
-  if (key === "services") return revisionPart("services", await revisionAggregate(db.service));
-  if (key === "parts") return revisionPart("parts", await revisionAggregate(db.part));
-  if (key === "attributes") return revisionPart("attributes", await revisionAggregate(db.attribute));
-  if (key === "settings") {
-    const settings = await db.setting.findUnique({ where: { id: "main" }, select: { updatedAt: true } });
-    return `settings:${settings?.updatedAt?.toISOString?.() || ""}`;
+// 恢复 / 导入前：本门户要写入的 id / publicToken 若已被其他门户占用，整体拒绝（不先清空再发现冲突）。
+async function assertNoCrossPortalConflicts(ctx, tx, data) {
+  const portalId = requireCtx(ctx);
+  const checks = [
+    ["client", (data.clients || []).map((row) => row.id), "客户"],
+    ["brand", (data.brands || []).map((row) => row.id), "品牌"],
+    ["model", (data.models || []).map((row) => row.id), "型号"],
+    ["service", (data.services || []).map((row) => row.id), "服务"],
+    ["part", (data.parts || []).map((row) => row.id), "配件"],
+    ["technician", (data.technicians || []).map((row) => row.id), "维修师"],
+    ["attribute", (data.attributes || []).map((row) => row.id), "属性"],
+    ["repair", (data.repairs || []).map((row) => row.id), "维修单"]
+  ];
+  for (const [model, ids, label] of checks) {
+    const valid = ids.filter((value) => typeof value === "string" && value);
+    for (const part of chunk(valid)) {
+      const used = await tx[model].count({ where: { id: { in: part }, portalId: { not: portalId } } });
+      if (used) throw conflict(`${label}编号与其他门户的数据冲突，无法恢复到当前门户`, "CROSS_PORTAL_ID_CONFLICT");
+    }
   }
-  if (key === "repairs") {
-    const [repairs, repairItems, payments] = await Promise.all([
-      revisionAggregate(db.repair),
-      revisionAggregate(db.repairItem),
-      revisionAggregate(db.payment)
-    ]);
-    const repairLatest = Math.max(repairs.latest, repairItems.latest, payments.latest);
-    return `repairs:${repairs.count}:${repairLatest}:${repairItems.count}:${payments.count}`;
+  const tokens = (data.repairs || []).map((row) => String(row.publicToken || "").trim()).filter(Boolean);
+  for (const part of chunk(tokens)) {
+    const used = await tx.repair.count({ where: { publicToken: { in: part }, portalId: { not: portalId } } });
+    if (used) throw conflict("二维码编号与其他门户的维修单冲突，无法恢复到当前门户", "CROSS_PORTAL_TOKEN_CONFLICT");
   }
-  return "";
 }
 
-async function revisionAggregate(model) {
-  const result = await model.aggregate({ _count: { _all: true }, _max: { updatedAt: true } });
-  return { count: result._count._all, latest: Date.parse(result._max.updatedAt?.toISOString?.() || "") || 0 };
-}
-
-function revisionPart(key, value) {
-  return `${key}:${value.count}:${value.latest}`;
-}
-
-export async function replaceBusinessData(data, options = {}) {
+// 只删除并重建当前门户的业务数据（客户 / 目录 / 技师 / 属性 / 订单及子记录 / 设置）。
+// 不触碰 Staff / PortalMember / StaffSession / Portal 管理元数据。必须在 withPortalWrite 事务内调用。
+export async function replaceBusinessData(ctx, tx, data, options = {}) {
+  const portalId = requireCtx(ctx);
+  if (!tx) throw new Error("replaceBusinessData 必须在门户写事务内调用");
   const attributes = Array.isArray(data.attributes) ? data.attributes : [];
-  const settings = { ...defaultSettings, ...(data.settings || {}) };
-  const preserveUpdatedAt = options.preserveUpdatedAt === true;
+  const settings = sanitizeSettings({ ...defaultSettings, ...(data.settings || {}) });
+  // 恢复 / 导入后的 updatedAt 统一为当前时刻，避免恢复旧时间戳让旧标签页的编辑再次被接受。
+  const stampAt = options.stampAt instanceof Date ? options.stampAt : new Date();
   const clientById = new Map((data.clients || []).map((client) => [client.id, { ...client, name: clientNameForSave(client.name) }]));
   const ticketById = new Map((data.repairs || []).map((repair, index) => [repair.id, repairTicket(repair, index)]));
   const preserveItemIds = (data.repairs || []).filter((repair) => repair?.id && repair.itemsLoaded === false).map((repair) => repair.id);
   const [preservedItems, preservedRepairs] = preserveItemIds.length
     ? await Promise.all([
-      prisma.repairItem.findMany({ where: { repairId: { in: preserveItemIds } }, orderBy: { createdAt: "asc" } }),
-      prisma.repair.findMany({ where: { id: { in: preserveItemIds } } })
+      tx.repairItem.findMany({ where: { repairId: { in: preserveItemIds }, repair: { portalId } }, orderBy: { createdAt: "asc" } }),
+      tx.repair.findMany({ where: { id: { in: preserveItemIds }, portalId } })
     ])
     : [[], []];
   const preservedItemsByRepair = new Map();
@@ -939,170 +1037,142 @@ export async function replaceBusinessData(data, options = {}) {
     rows.push(item);
     preservedItemsByRepair.set(item.repairId, rows);
   }
-  await prisma.$transaction(async (tx) => {
-    if (options.expectedRevision && options.expectedRevision !== await getBusinessRevision(tx)) {
-      const error = new Error("数据已被其他设备更新，请刷新后重试");
-      error.status = 409;
-      throw error;
-    }
-    await tx.payment.deleteMany();
-    await tx.repairItem.deleteMany();
-    await tx.repair.deleteMany();
-    await tx.attribute.deleteMany();
-    await tx.attributeGroup.deleteMany();
-    await tx.model.deleteMany();
-    await tx.brand.deleteMany();
-    await tx.part.deleteMany();
-    await tx.service.deleteMany();
-    await tx.technician.deleteMany();
-    await tx.client.deleteMany();
-    if (options.replaceStaff) await tx.staff.deleteMany();
 
-    if (options.replaceStaff && Array.isArray(data.users)) {
-      for (const user of data.users) {
-        await tx.staff.create({
-          data: {
-            id: user.id,
-            name: user.name || user.username || "员工",
-            username: user.username,
-            email: user.email || "",
-            passwordHash: user.passwordHash || user.password || "",
-            isAdmin: user.isAdmin ?? user.username === "ming",
-            pagePermissions: Array.isArray(user.pagePermissions) ? user.pagePermissions : [],
-            ...timestamps(user, preserveUpdatedAt)
-          }
-        });
-      }
-    }
-    if (!options.replaceStaff && Array.isArray(data.users)) {
-      const currentStaff = await tx.staff.findMany();
-      const nextIds = new Set(data.users.map((user) => user.id).filter(Boolean));
-      for (const existing of currentStaff) {
-        if (!nextIds.has(existing.id) && currentStaff.length > 1) await tx.staff.delete({ where: { id: existing.id } });
-      }
-      for (const user of data.users) {
-        const existing = user.id ? await tx.staff.findUnique({ where: { id: user.id } }) : null;
-        if (!user.id && !user.password) {
-          throwBadRequest("新增员工必须设置密码");
-        }
-        const passwordHash = user.password ? hashPassword(user.password) : existing?.passwordHash;
-        if (!passwordHash) throwBadRequest("员工密码不完整");
-        await tx.staff.upsert({
-          where: { id: user.id || cryptoId() },
-          create: { id: user.id || cryptoId(), name: user.name || user.username || "员工", username: user.username, email: user.email || "", passwordHash, isAdmin: Boolean(user.isAdmin), pagePermissions: Array.isArray(user.pagePermissions) ? user.pagePermissions : [], ...timestamps(user, preserveUpdatedAt) },
-          update: { name: user.name || user.username || "员工", username: user.username, email: user.email || "", passwordHash, isAdmin: Boolean(user.isAdmin), pagePermissions: Array.isArray(user.pagePermissions) ? user.pagePermissions : [] }
-        });
-      }
-    }
+  await assertNoCrossPortalConflicts(ctx, tx, data);
 
-    for (const client of data.clients || []) {
-      await tx.client.create({ data: { ...pick(client, ["id", "docType", "identity", "email", "phone", "address", "comment"]), name: clientNameForSave(client.name), level: normalizeClientLevel(client.level), ...timestamps(client, preserveUpdatedAt) } });
-    }
-    for (const [index, brand] of (data.brands || []).entries()) {
-      await tx.brand.create({ data: { ...pick(brand, ["id", "name"]), sortOrder: dbSortOrder(brand.sortOrder, index), ...timestamps(brand, preserveUpdatedAt) } });
-    }
-    for (const [index, model] of (data.models || []).entries()) {
-      await tx.model.create({ data: { ...pick(model, ["id", "brandId", "name"]), sortOrder: dbSortOrder(model.sortOrder, index), ...timestamps(model, preserveUpdatedAt) } });
-    }
-    for (const [index, service] of (data.services || []).entries()) {
-      await tx.service.create({ data: { ...pick(service, ["id", "defaultName", "category", "zh", "es"]), category: service.category || "", price: dbMoney(service.price), sortOrder: dbSortOrder(service.sortOrder, index), ...timestamps(service, preserveUpdatedAt) } });
-    }
-    for (const [index, part] of (data.parts || []).entries()) {
-      await tx.part.create({ data: { ...pick(part, ["id", "defaultName", "category", "zh", "es"]), category: part.category || "", price: dbMoney(part.price), sortOrder: dbSortOrder(part.sortOrder, index), ...timestamps(part, preserveUpdatedAt) } });
-    }
-    for (const [index, technician] of (data.technicians || []).entries()) {
-      await tx.technician.create({
-        data: {
-          id: technician.id,
-          name: technician.name || "维修师",
-          phone: technician.phone || "",
-          email: technician.email || "",
-          color: normalizeTechnicianColor(technician.color),
-          active: technician.active !== false,
-          sortOrder: dbSortOrder(technician.sortOrder, index),
-          ...timestamps(technician, preserveUpdatedAt)
-        }
-      });
-    }
-    const groupNames = [...new Set(attributes.map((item) => item.groupName || "其他"))];
-    const groupIds = {};
-    for (const groupName of groupNames.length ? groupNames : ["颜色", "其他"]) {
-      const group = await tx.attributeGroup.create({ data: { name: groupName } });
-      groupIds[groupName] = group.id;
-    }
-    for (const [index, attr] of attributes.entries()) {
-      await tx.attribute.create({
-        data: {
-          id: attr.id,
-          groupId: groupIds[attr.groupName || "其他"],
-          defaultName: attr.defaultName || "",
-          zh: attr.zh || "",
-          es: attr.es || "",
-          sortOrder: dbSortOrder(attr.sortOrder, index),
-          ...timestamps(attr, preserveUpdatedAt)
-        }
-      });
-    }
-    for (const [index, repair] of (data.repairs || []).entries()) {
-      const preservedRepair = repair.itemsLoaded === false ? preservedRepairById.get(repair.id) : null;
-      const repairData = preservedRepair ? mergeCompactRepairForReplace(preservedRepair, repair) : repair;
-      const repairItems = repair.itemsLoaded === false ? (preservedItemsByRepair.get(repair.id) || []) : (repair.items || []);
-      const repairPayments = repairPaymentsForImport(repairData);
-      await tx.repair.create({
-        data: {
-          id: repairData.id,
-          ticket: repairTicket(repairData, index),
-          clientId: repairData.clientId,
-          brand: repairData.brand || "",
-          model: repairData.model || "",
-          properties: repairData.properties || "",
-          imei: repairData.imei || "",
-          issue: repairData.issue || "",
-          internalNote: repairData.internalNote || "",
-          passwordType: repairData.passwordType || "",
-          passwordText: repairData.passwordText || "",
-          passwordPattern: repairData.passwordPattern || [],
-          status: normalizeStatus(repairData.status),
-          repairTime: repairData.repairTime || "",
-          warrantyStart: repairData.warrantyStart || "",
-          technicianId: repairData.technicianId || "",
-          technicianName: repairData.technicianName || "",
-          budget: dbMoney(repairData.budget),
-          deposit: repairPayments.length ? depositPaymentTotal(repairPayments) : dbMoney(repairData.deposit),
-          paymentMethod: normalizeRepairPaymentMethod(repairData.paymentMethod),
-          discountAmount: dbMoney(repairData.discountAmount),
-          costAmount: dbMoney(repairData.costAmount),
-          frontPhoto: repairData.frontPhoto || "",
-          backPhoto: repairData.backPhoto || "",
-      signatureDataUrl: repairData.signatureDataUrl || "",
-      signedAt: repairData.signedAt || "",
-      publicToken: repairData.publicToken || cryptoId(),
-      orderType: repairData.orderType || "repair",
-      sourceRepairId: repairData.sourceRepairId || "",
-      warrantyReason: repairData.warrantyReason || "",
-      warrantyDiagnosis: repairData.warrantyDiagnosis || "",
-      warrantyResolution: repairData.warrantyResolution || "",
-      warrantyChargeable: Boolean(repairData.warrantyChargeable),
-      statusHistory: repairData.statusHistory || [],
-      notificationLog: repairData.notificationLog || [],
-      searchText: buildRepairSearchText(repairData, { client: clientById.get(repairData.clientId) || {}, items: repairItems, sourceTicket: ticketById.get(repairData.sourceRepairId) || "" }),
-      ticketSort: BigInt(ticketSortValue(repairTicket(repairData, index))),
-          ...timestamps(repairData, preserveUpdatedAt),
-          items: { create: repairItems.map((item) => ({ id: item.id, name: item.name || "", qty: dbMoney(item.qty, 1), price: dbMoney(item.price), cost: dbMoney(item.cost) })) },
-          payments: { create: repairPayments.map(paymentPrismaData) }
-        }
-      });
-    }
-    await tx.setting.upsert({ where: { id: "main" }, create: { id: "main", value: settings }, update: { value: settings } });
-  }, { timeout: options.transactionTimeout || 300000 });
+  await tx.payment.deleteMany({ where: { repair: { portalId } } });
+  await tx.repairItem.deleteMany({ where: { repair: { portalId } } });
+  await tx.repair.deleteMany({ where: { portalId } });
+  await tx.attribute.deleteMany({ where: { portalId } });
+  await tx.attributeGroup.deleteMany({ where: { portalId } });
+  await tx.model.deleteMany({ where: { portalId } });
+  await tx.brand.deleteMany({ where: { portalId } });
+  await tx.part.deleteMany({ where: { portalId } });
+  await tx.service.deleteMany({ where: { portalId } });
+  await tx.technician.deleteMany({ where: { portalId } });
+  await tx.client.deleteMany({ where: { portalId } });
+
+  const stamps = (source) => ({ ...(validDate(source?.createdAt) ? { createdAt: validDate(source.createdAt) } : {}), updatedAt: stampAt });
+
+  for (const client of data.clients || []) {
+    await tx.client.create({ data: { ...pick(client, ["id", "docType", "identity", "email", "phone", "address", "comment"]), portalId, name: clientNameForSave(client.name), level: normalizeClientLevel(client.level), ...stamps(client) } });
+  }
+  for (const [index, brand] of (data.brands || []).entries()) {
+    await tx.brand.create({ data: { ...pick(brand, ["id", "name"]), portalId, sortOrder: dbSortOrder(brand.sortOrder, index), ...stamps(brand) } });
+  }
+  for (const [index, model] of (data.models || []).entries()) {
+    await tx.model.create({ data: { ...pick(model, ["id", "brandId", "name"]), portalId, sortOrder: dbSortOrder(model.sortOrder, index), ...stamps(model) } });
+  }
+  for (const [index, service] of (data.services || []).entries()) {
+    await tx.service.create({ data: { ...pick(service, ["id", "defaultName", "category", "zh", "es"]), portalId, category: service.category || "", price: dbMoney(service.price), sortOrder: dbSortOrder(service.sortOrder, index), ...stamps(service) } });
+  }
+  for (const [index, part] of (data.parts || []).entries()) {
+    await tx.part.create({ data: { ...pick(part, ["id", "defaultName", "category", "zh", "es"]), portalId, category: part.category || "", price: dbMoney(part.price), sortOrder: dbSortOrder(part.sortOrder, index), ...stamps(part) } });
+  }
+  for (const [index, technician] of (data.technicians || []).entries()) {
+    await tx.technician.create({
+      data: {
+        id: technician.id,
+        portalId,
+        name: technician.name || "维修师",
+        phone: technician.phone || "",
+        email: technician.email || "",
+        color: normalizeTechnicianColor(technician.color),
+        active: technician.active !== false,
+        sortOrder: dbSortOrder(technician.sortOrder, index),
+        ...stamps(technician)
+      }
+    });
+  }
+  const groupNames = [...new Set(attributes.map((item) => item.groupName || "其他"))];
+  const groupIds = {};
+  for (const groupName of groupNames.length ? groupNames : ["颜色", "其他"]) {
+    const group = await tx.attributeGroup.create({ data: { portalId, name: groupName } });
+    groupIds[groupName] = group.id;
+  }
+  for (const [index, attr] of attributes.entries()) {
+    await tx.attribute.create({
+      data: {
+        id: attr.id,
+        portalId,
+        groupId: groupIds[attr.groupName || "其他"],
+        defaultName: attr.defaultName || "",
+        zh: attr.zh || "",
+        es: attr.es || "",
+        sortOrder: dbSortOrder(attr.sortOrder, index),
+        ...stamps(attr)
+      }
+    });
+  }
+  for (const [index, repair] of (data.repairs || []).entries()) {
+    const preservedRepair = repair.itemsLoaded === false ? preservedRepairById.get(repair.id) : null;
+    const repairData = preservedRepair ? mergeCompactRepairForReplace(preservedRepair, repair) : repair;
+    const repairItems = repair.itemsLoaded === false ? (preservedItemsByRepair.get(repair.id) || []) : (repair.items || []);
+    const repairPayments = repairPaymentsForImport(repairData);
+    await tx.repair.create({
+      data: {
+        id: repairData.id,
+        portalId,
+        ticket: repairTicket(repairData, index),
+        clientId: repairData.clientId,
+        brand: repairData.brand || "",
+        model: repairData.model || "",
+        properties: repairData.properties || "",
+        imei: repairData.imei || "",
+        issue: repairData.issue || "",
+        internalNote: repairData.internalNote || "",
+        passwordType: repairData.passwordType || "",
+        passwordText: repairData.passwordText || "",
+        passwordPattern: repairData.passwordPattern || [],
+        status: normalizeStatus(repairData.status),
+        repairTime: repairData.repairTime || "",
+        warrantyStart: repairData.warrantyStart || "",
+        technicianId: repairData.technicianId || "",
+        technicianName: repairData.technicianName || "",
+        budget: dbMoney(repairData.budget),
+        deposit: repairPayments.length ? depositPaymentTotal(repairPayments) : dbMoney(repairData.deposit),
+        paymentMethod: normalizeRepairPaymentMethod(repairData.paymentMethod),
+        discountAmount: dbMoney(repairData.discountAmount),
+        costAmount: dbMoney(repairData.costAmount),
+        frontPhoto: repairData.frontPhoto || "",
+        backPhoto: repairData.backPhoto || "",
+        signatureDataUrl: repairData.signatureDataUrl || "",
+        signedAt: repairData.signedAt || "",
+        publicToken: repairData.publicToken || cryptoId(),
+        orderType: repairData.orderType || "repair",
+        sourceRepairId: repairData.sourceRepairId || "",
+        warrantyReason: repairData.warrantyReason || "",
+        warrantyDiagnosis: repairData.warrantyDiagnosis || "",
+        warrantyResolution: repairData.warrantyResolution || "",
+        warrantyChargeable: Boolean(repairData.warrantyChargeable),
+        statusHistory: repairData.statusHistory || [],
+        notificationLog: repairData.notificationLog || [],
+        searchText: buildRepairSearchText(repairData, { client: clientById.get(repairData.clientId) || {}, items: repairItems, sourceTicket: ticketById.get(repairData.sourceRepairId) || "" }),
+        ticketSort: BigInt(ticketSortValue(repairTicket(repairData, index))),
+        ...stamps(repairData),
+        items: { create: repairItems.map((item) => ({ id: item.id, name: item.name || "", qty: dbMoney(item.qty, 1), price: dbMoney(item.price), cost: dbMoney(item.cost) })) },
+        payments: { create: repairPayments.map(paymentPrismaData) }
+      }
+    });
+  }
+  await tx.setting.upsert({ where: { portalId }, create: { portalId, value: settings }, update: { value: settings } });
 }
 
-export async function syncFromClientData(data, options = {}) {
-  await replaceBusinessData(data, { replaceStaff: false, ...options });
-  return getBootstrapData();
+// 整包恢复 / 导入入口：门户写锁 + expectedRevision + 只替换当前门户业务数据。
+export async function syncFromClientData(ctx, data, options = {}) {
+  parseExpectedRevision(options.expectedRevision);
+  const { revision } = await withPortalWrite(ctx, { expectedRevision: options.expectedRevision, timeout: options.transactionTimeout || 300000 }, async (tx) => {
+    if (typeof options.beforeReplace === "function") await options.beforeReplace(tx);
+    await replaceBusinessData(ctx, tx, data, options);
+    return true;
+  });
+  const bootstrap = await getBootstrapData(ctx);
+  return { ...bootstrap, _revision: revision };
 }
 
-export async function syncTechniciansData(technicians = []) {
+export async function syncTechniciansData(ctx, technicians = [], options = {}) {
+  parseExpectedRevision(options.expectedRevision);
+  const portalId = requireCtx(ctx);
   const rows = requireRows(technicians, "维修师").map((technician, index) => ({
     id: String(technician.id || cryptoId()).trim(),
     name: String(technician.name || "维修师").trim(),
@@ -1116,51 +1186,70 @@ export async function syncTechniciansData(technicians = []) {
   validateUniqueField(rows, "维修师", "id");
   validateUniqueField(rows, "维修师", "name", "名称重复");
 
-  await prisma.$transaction(async (tx) => {
-    const existing = await tx.technician.findMany({ select: { id: true, name: true } });
+  const { revision } = await withPortalWrite(ctx, { expectedRevision: options.expectedRevision, timeout: 30000 }, async (tx) => {
+    const existing = await tx.technician.findMany({ where: { portalId }, select: { id: true, name: true } });
     const nextIds = new Set(rows.map((row) => row.id));
     const removed = existing.filter((item) => !nextIds.has(item.id));
     if (removed.length) {
       const removedIds = removed.map((item) => item.id);
       const removedNames = removed.map((item) => item.name).filter(Boolean);
       const usedCount = await tx.repair.count({
-        where: {
-          OR: [
-            { technicianId: { in: removedIds } },
-            { technicianName: { in: removedNames } }
-          ]
-        }
+        where: { portalId, OR: [{ technicianId: { in: removedIds } }, { technicianName: { in: removedNames } }] }
       });
-      if (usedCount > 0) throwBadRequest("已有维修单使用该维修师，不能删除");
+      if (usedCount > 0) throw badRequest("已有维修单使用该维修师，不能删除");
     }
-
-    await tx.technician.deleteMany();
+    const foreignIds = rows.map((row) => row.id);
+    const foreign = await tx.technician.count({ where: { id: { in: foreignIds }, portalId: { not: portalId } } });
+    if (foreign) throw conflict("维修师编号与其他门户冲突", "CROSS_PORTAL_ID_CONFLICT");
+    await tx.technician.deleteMany({ where: { portalId } });
     for (const row of rows) {
-      await tx.technician.create({ data: row });
+      await tx.technician.create({ data: { ...row, portalId } });
     }
-  }, { timeout: 30000 });
+  });
 
-  const savedRows = await prisma.technician.findMany({ orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] });
-  return { technicians: savedRows, _revisionPatch: await getRevisionPatch(["technicians"]) };
+  const savedRows = await prisma.technician.findMany({ where: { portalId }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] });
+  return { technicians: savedRows.map(stripPortal), _revision: revision };
 }
 
 const CATALOG_SETTING_KEYS = ["productCatalogCategories", "productServiceCategories", "productPartCategories"];
 
-export async function syncCatalogData(data = {}) {
-  const brands = requireRows(data.brands, "品牌").map((brand, index) => ({
+// 目录分区（HANDOFF 5.3）：section 决定允许修改的数组与设置键；未列出的数组 / 设置键一律拒绝。
+export const CATALOG_SECTIONS = {
+  "brands-models": { permissions: ["categories"], arrays: ["brands", "models"], settingKeys: [] },
+  services: { permissions: ["services"], arrays: ["services"], settingKeys: ["productServiceCategories"] },
+  parts: { permissions: ["modules"], arrays: ["parts"], settingKeys: ["productPartCategories"] },
+  products: { permissions: ["services", "modules"], arrays: ["services", "parts"], settingKeys: CATALOG_SETTING_KEYS }
+};
+
+export async function syncCatalogData(ctx, data = {}, options = {}) {
+  parseExpectedRevision(options.expectedRevision);
+  const portalId = requireCtx(ctx);
+  const section = CATALOG_SECTIONS[options.section];
+  if (!section) throw badRequest("未知的目录分区（section）", "INVALID_SECTION");
+  const allowedKeys = new Set([...section.arrays, "settings", "section", "expectedRevision"]);
+  for (const key of Object.keys(data || {})) {
+    if (!allowedKeys.has(key)) throw badRequest(`目录分区 ${options.section} 不允许提交 ${key}`, "INVALID_INPUT");
+  }
+  const settingsInput = data.settings && typeof data.settings === "object" && !Array.isArray(data.settings) ? data.settings : {};
+  for (const key of Object.keys(settingsInput)) {
+    if (!section.settingKeys.includes(key)) throw badRequest(`目录分区 ${options.section} 不允许修改设置 ${key}`, "INVALID_INPUT");
+  }
+  const settingsPatch = Object.fromEntries(section.settingKeys.filter((key) => settingsInput[key] !== undefined).map((key) => [key, settingsInput[key]]));
+
+  const brands = section.arrays.includes("brands") ? requireRows(data.brands, "品牌").map((brand, index) => ({
     id: String(brand.id || cryptoId()).trim(),
     name: String(brand.name || "").trim(),
     sortOrder: dbSortOrder(brand.sortOrder, index),
     ...timestamps(brand)
-  }));
-  const models = requireRows(data.models, "型号").map((model, index) => ({
+  })) : null;
+  const models = section.arrays.includes("models") ? requireRows(data.models, "型号").map((model, index) => ({
     id: String(model.id || cryptoId()).trim(),
     brandId: String(model.brandId || "").trim(),
     name: String(model.name || "").trim(),
     sortOrder: dbSortOrder(model.sortOrder, index),
     ...timestamps(model)
-  }));
-  const services = requireRows(data.services, "服务").map((service, index) => ({
+  })) : null;
+  const services = section.arrays.includes("services") ? requireRows(data.services, "服务").map((service, index) => ({
     id: String(service.id || cryptoId()).trim(),
     defaultName: String(service.defaultName || "").trim(),
     category: String(service.category || ""),
@@ -1169,8 +1258,8 @@ export async function syncCatalogData(data = {}) {
     price: dbMoney(service.price),
     sortOrder: dbSortOrder(service.sortOrder, index),
     ...timestamps(service)
-  }));
-  const parts = requireRows(data.parts, "配件").map((part, index) => ({
+  })) : null;
+  const parts = section.arrays.includes("parts") ? requireRows(data.parts, "配件").map((part, index) => ({
     id: String(part.id || cryptoId()).trim(),
     defaultName: String(part.defaultName || "").trim(),
     category: String(part.category || ""),
@@ -1179,64 +1268,69 @@ export async function syncCatalogData(data = {}) {
     price: dbMoney(part.price),
     sortOrder: dbSortOrder(part.sortOrder, index),
     ...timestamps(part)
-  }));
+  })) : null;
   validateCatalogRows({ brands, models, services, parts });
 
-  const settingsInput = data.settings && typeof data.settings === "object" && !Array.isArray(data.settings) ? data.settings : {};
-  const settingsPatch = Object.fromEntries(CATALOG_SETTING_KEYS.filter((key) => settingsInput[key] !== undefined).map((key) => [key, settingsInput[key]]));
-  let settingsUpdatedAt = "";
-
-  await prisma.$transaction(async (tx) => {
-    // 服务端强制：要删除的型号若已有维修单使用（品牌不区分大小写、型号精确匹配，与前端口径一致），拒绝删除。
-    const nextModelIds = new Set(models.map((row) => row.id));
-    const existingModels = await tx.model.findMany({ include: { brand: { select: { name: true } } } });
-    for (const model of existingModels) {
-      if (nextModelIds.has(model.id)) continue;
-      const used = await tx.$queryRaw(Prisma.sql`
-        SELECT COUNT(*) AS total FROM Repair
-        WHERE LOWER(brand) = ${String(model.brand?.name || "").toLowerCase()}
-          AND model COLLATE utf8mb4_bin = ${model.name}
-      `);
-      if (Number(used[0]?.total || 0) > 0) throwBadRequest("该型号已有维修单，不能直接删除");
+  const { revision } = await withPortalWrite(ctx, { expectedRevision: options.expectedRevision, timeout: 60000 }, async (tx) => {
+    const scoped = (model) => scopedTable(tx, model, portalId);
+    if (brands && models) {
+      const nextModelIds = new Set(models.map((row) => row.id));
+      const existingModels = await tx.model.findMany({ where: { portalId }, include: { brand: { select: { name: true } } } });
+      for (const model of existingModels) {
+        if (nextModelIds.has(model.id)) continue;
+        const used = await tx.$queryRaw(Prisma.sql`
+          SELECT COUNT(*) AS total FROM Repair
+          WHERE portalId = ${portalId} AND LOWER(brand) = ${String(model.brand?.name || "").toLowerCase()}
+            AND model COLLATE utf8mb4_bin = ${model.name}
+        `);
+        if (Number(used[0]?.total || 0) > 0) throw badRequest("该型号已有维修单，不能直接删除");
+      }
+      await assertNoForeignIds(tx, "model", models, portalId, "型号");
+      await assertNoForeignIds(tx, "brand", brands, portalId, "品牌");
+      await deleteMissingRows(scoped("model"), models);
+      await deleteMissingRows(scoped("brand"), brands);
+      await syncTableRows(scoped("brand"), brands, ["name", "sortOrder"], { deleteMissing: false });
+      await syncTableRows(scoped("model"), models, ["brandId", "name", "sortOrder"], { deleteMissing: false });
     }
-    await deleteMissingRows(tx.model, models);
-    await deleteMissingRows(tx.brand, brands);
-    await syncTableRows(tx.brand, brands, ["name", "sortOrder"], { deleteMissing: false });
-    await syncTableRows(tx.model, models, ["brandId", "name", "sortOrder"], { deleteMissing: false });
-    await syncTableRows(tx.service, services, ["defaultName", "category", "zh", "es", "price", "sortOrder"]);
-    await syncTableRows(tx.part, parts, ["defaultName", "category", "zh", "es", "price", "sortOrder"]);
-
+    if (services) {
+      await assertNoForeignIds(tx, "service", services, portalId, "服务");
+      await syncTableRows(scoped("service"), services, ["defaultName", "category", "zh", "es", "price", "sortOrder"]);
+    }
+    if (parts) {
+      await assertNoForeignIds(tx, "part", parts, portalId, "配件");
+      await syncTableRows(scoped("part"), parts, ["defaultName", "category", "zh", "es", "price", "sortOrder"]);
+    }
     if (Object.keys(settingsPatch).length) {
-      const current = await tx.setting.findUnique({ where: { id: "main" } });
-      const saved = await tx.setting.upsert({
-        where: { id: "main" },
-        create: { id: "main", value: { ...defaultSettings, ...settingsPatch } },
+      const current = await tx.setting.findUnique({ where: { portalId } });
+      await tx.setting.upsert({
+        where: { portalId },
+        create: { portalId, value: { ...defaultSettings, ...settingsPatch } },
         update: { value: { ...(current?.value || defaultSettings), ...settingsPatch } }
       });
-      settingsUpdatedAt = saved.updatedAt?.toISOString?.() || "";
     }
-  }, { timeout: 60000 });
+  });
 
-  const [savedBrands, savedModels, savedServices, savedParts, settings] = await Promise.all([
-    prisma.brand.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
-    prisma.model.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
-    prisma.service.findMany({ orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
-    prisma.part.findMany({ orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
-    prisma.setting.findUnique({ where: { id: "main" } })
+  const [savedBrands, savedModels, savedServices, savedParts, setting] = await Promise.all([
+    prisma.brand.findMany({ where: { portalId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
+    prisma.model.findMany({ where: { portalId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
+    prisma.service.findMany({ where: { portalId }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
+    prisma.part.findMany({ where: { portalId }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
+    prisma.setting.findUnique({ where: { portalId } })
   ]);
-  const revisionKeys = ["brands", "models", "services", "parts", "settings"];
   return {
-    brands: savedBrands,
-    models: savedModels,
-    services: savedServices.map((item) => ({ ...item, category: item.category || "", price: moneyNumber(item.price) })),
-    parts: savedParts.map((item) => ({ ...item, category: item.category || "", price: moneyNumber(item.price) })),
-    settings: { ...defaultSettings, ...(settings?.value || {}) },
-    _settingsUpdatedAt: settingsUpdatedAt || settings?.updatedAt?.toISOString?.() || "",
-    _revisionPatch: await getRevisionPatch(revisionKeys)
+    brands: savedBrands.map(stripPortal),
+    models: savedModels.map(stripPortal),
+    services: savedServices.map((item) => ({ ...stripPortal(item), category: item.category || "", price: moneyNumber(item.price) })),
+    parts: savedParts.map((item) => ({ ...stripPortal(item), category: item.category || "", price: moneyNumber(item.price) })),
+    settings: { ...defaultSettings, ...(setting?.value || {}) },
+    _settingsUpdatedAt: setting?.updatedAt?.toISOString?.() || "",
+    _revision: revision
   };
 }
 
-export async function syncAttributesData(attributes = []) {
+export async function syncAttributesData(ctx, attributes = [], options = {}) {
+  parseExpectedRevision(options.expectedRevision);
+  const portalId = requireCtx(ctx);
   const rows = requireRows(attributes, "属性").map((attr, index) => ({
     id: String(attr.id || cryptoId()).trim(),
     groupName: String(attr.groupName || "其他").trim() || "其他",
@@ -1248,117 +1342,39 @@ export async function syncAttributesData(attributes = []) {
   }));
   validateUniqueField(rows, "属性", "id");
   rows.forEach((row) => {
-    if (!row.defaultName) throwBadRequest("属性名称不能为空");
+    if (!row.defaultName) throw badRequest("属性名称不能为空");
   });
 
-  await prisma.$transaction(async (tx) => {
-    await tx.attribute.deleteMany();
-    await tx.attributeGroup.deleteMany();
+  const { revision } = await withPortalWrite(ctx, { expectedRevision: options.expectedRevision, timeout: 30000 }, async (tx) => {
+    await assertNoForeignIds(tx, "attribute", rows, portalId, "属性");
+    await tx.attribute.deleteMany({ where: { portalId } });
+    await tx.attributeGroup.deleteMany({ where: { portalId } });
     const groupNames = [...new Set(rows.map((item) => item.groupName || "其他"))];
     for (const groupName of groupNames.length ? groupNames : ["颜色", "其他"]) {
-      await tx.attributeGroup.create({
-        data: {
-          name: groupName,
-          attributes: {
-            create: rows
-              .filter((attr) => (attr.groupName || "其他") === groupName)
-              .map((attr) => ({
-                id: attr.id,
-                defaultName: attr.defaultName || "",
-                zh: attr.zh || "",
-                es: attr.es || "",
-                sortOrder: attr.sortOrder,
-                ...timestamps(attr)
-              }))
-          }
-        }
-      });
-    }
-  }, { timeout: 30000 });
-
-  const groups = await prisma.attributeGroup.findMany({ include: { attributes: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] } }, orderBy: { name: "asc" } });
-  return {
-    attributes: groups.flatMap((group) => group.attributes.map((item) => ({ ...item, groupName: group.name }))),
-    _revisionPatch: await getRevisionPatch(["attributes"])
-  };
-}
-
-export async function syncNonRepairBusinessData(data, options = {}) {
-  const attributes = Array.isArray(data.attributes) ? data.attributes : [];
-  const settings = { ...defaultSettings, ...(data.settings || {}) };
-  await prisma.$transaction(async (tx) => {
-    if (options.syncClients !== false && Array.isArray(data.clients)) {
-      const nextClientIds = new Set(data.clients.map((client) => client.id).filter(Boolean));
-      const existingClients = await tx.client.findMany({ select: { id: true } });
-      for (const existing of existingClients) {
-        if (!nextClientIds.has(existing.id)) await tx.client.delete({ where: { id: existing.id } });
-      }
-      for (const client of data.clients) {
-        await tx.client.upsert({
-          where: { id: client.id },
-          create: { ...pick(client, ["id", "docType", "identity", "email", "phone", "address", "comment"]), name: clientNameForSave(client.name), level: normalizeClientLevel(client.level), ...timestamps(client) },
-          update: { docType: client.docType || "DNI", identity: client.identity || "", email: client.email || "", phone: client.phone || "", address: client.address || "", comment: client.comment || "", name: clientNameForSave(client.name), level: normalizeClientLevel(client.level) }
+      const group = await tx.attributeGroup.create({ data: { portalId, name: groupName } });
+      const groupRows = rows.filter((attr) => (attr.groupName || "其他") === groupName);
+      if (groupRows.length) {
+        await tx.attribute.createMany({
+          data: groupRows.map((attr) => ({
+            id: attr.id,
+            portalId,
+            groupId: group.id,
+            defaultName: attr.defaultName || "",
+            zh: attr.zh || "",
+            es: attr.es || "",
+            sortOrder: attr.sortOrder,
+            ...timestamps(attr)
+          }))
         });
       }
     }
+  });
 
-    await tx.attribute.deleteMany();
-    await tx.attributeGroup.deleteMany();
-    await tx.model.deleteMany();
-    await tx.brand.deleteMany();
-    await tx.part.deleteMany();
-    await tx.service.deleteMany();
-    await tx.technician.deleteMany();
-
-    for (const [index, brand] of (data.brands || []).entries()) {
-      await tx.brand.create({ data: { ...pick(brand, ["id", "name"]), sortOrder: dbSortOrder(brand.sortOrder, index), ...timestamps(brand) } });
-    }
-    for (const [index, model] of (data.models || []).entries()) {
-      await tx.model.create({ data: { ...pick(model, ["id", "brandId", "name"]), sortOrder: dbSortOrder(model.sortOrder, index), ...timestamps(model) } });
-    }
-    for (const [index, service] of (data.services || []).entries()) {
-      await tx.service.create({ data: { ...pick(service, ["id", "defaultName", "category", "zh", "es"]), category: service.category || "", price: service.price || 0, sortOrder: dbSortOrder(service.sortOrder, index), ...timestamps(service) } });
-    }
-    for (const [index, part] of (data.parts || []).entries()) {
-      await tx.part.create({ data: { ...pick(part, ["id", "defaultName", "category", "zh", "es"]), category: part.category || "", price: part.price || 0, sortOrder: dbSortOrder(part.sortOrder, index), ...timestamps(part) } });
-    }
-    for (const [index, technician] of (data.technicians || []).entries()) {
-      await tx.technician.create({
-        data: {
-          id: technician.id,
-          name: technician.name || "维修师",
-          phone: technician.phone || "",
-          email: technician.email || "",
-          color: normalizeTechnicianColor(technician.color),
-          active: technician.active !== false,
-          sortOrder: dbSortOrder(technician.sortOrder, index),
-          ...timestamps(technician)
-        }
-      });
-    }
-    const groupNames = [...new Set(attributes.map((item) => item.groupName || "其他"))];
-    for (const groupName of groupNames.length ? groupNames : ["颜色", "其他"]) {
-      await tx.attributeGroup.create({
-        data: {
-          name: groupName,
-          attributes: {
-            create: attributes
-              .filter((attr) => (attr.groupName || "其他") === groupName)
-              .map((attr, index) => ({
-                id: attr.id,
-                defaultName: attr.defaultName || "",
-                zh: attr.zh || "",
-                es: attr.es || "",
-                sortOrder: dbSortOrder(attr.sortOrder, index),
-                ...timestamps(attr)
-              }))
-          }
-        }
-      });
-    }
-    await tx.setting.upsert({ where: { id: "main" }, create: { id: "main", value: settings }, update: { value: settings } });
-  }, { timeout: options.transactionTimeout || 120000 });
-  return getBootstrapData({ includeRepairs: options.includeRepairs !== false });
+  const groups = await prisma.attributeGroup.findMany({ where: { portalId }, include: { attributes: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] } }, orderBy: { name: "asc" } });
+  return {
+    attributes: groups.flatMap((group) => group.attributes.map((item) => ({ ...stripPortal(item), groupName: group.name }))),
+    _revision: revision
+  };
 }
 
 export function mergeExternalHistoryData(currentData = {}, incomingData = {}) {
@@ -1372,8 +1388,6 @@ export function mergeExternalHistoryData(currentData = {}, incomingData = {}) {
 
   return {
     data: {
-      ...currentData,
-      users: currentData.users || [],
       technicians: currentData.technicians || [],
       clients,
       brands,
@@ -1391,25 +1405,16 @@ export function mergeExternalHistoryData(currentData = {}, incomingData = {}) {
   };
 }
 
-export function businessRevision(data) {
-  const keys = ["users", "technicians", "clients", "brands", "models", "services", "parts", "attributes", "repairs"];
-  return keys
-    .map((key) => {
-      const rows = Array.isArray(data[key]) ? data[key] : [];
-      const latest = rows.reduce((max, row) => Math.max(max, Date.parse(row.updatedAt || row.createdAt || "") || 0), 0);
-      const nestedCount = key === "repairs" ? rows.reduce((sum, row) => sum + (Array.isArray(row.payments) ? row.payments.length : 0), 0) : 0;
-      return `${key}:${rows.length}:${latest}${key === "repairs" ? `:${nestedCount}` : ""}`;
-    })
-    .concat(`settings:${data._settingsUpdatedAt || ""}`)
-    .join("|");
-}
+// 设置字段白名单：只保留系统已知的设置键；锁单策略键由路由按门户管理员权限单独放行。
+export { SETTING_KEYS };
+export const PROTECTED_SETTING_KEYS = ["allowOrderUnlock", "enableOrderLock"];
 
-export async function ensureDefaultSettings() {
-  await prisma.setting.upsert({
-    where: { id: "main" },
-    create: { id: "main", value: defaultSettings },
-    update: {}
-  });
+export function sanitizeSettings(value = {}) {
+  const result = {};
+  for (const key of SETTING_KEYS) {
+    if (value[key] !== undefined) result[key] = value[key];
+  }
+  return result;
 }
 
 function pick(source, keys) {
@@ -1575,6 +1580,25 @@ function cryptoId() {
   return crypto.randomUUID();
 }
 
+// 把 Prisma 模型委托包装成只操作当前门户的表：findMany / create / update / deleteMany 自动带 portalId。
+function scopedTable(tx, modelName, portalId) {
+  const model = tx[modelName];
+  return {
+    findMany: (args = {}) => model.findMany({ ...args, where: { ...(args.where || {}), portalId } }),
+    create: ({ data }) => model.create({ data: { ...data, portalId } }),
+    update: ({ where, data }) => model.update({ where, data }),
+    deleteMany: ({ where }) => model.deleteMany({ where: { ...(where || {}), portalId } })
+  };
+}
+
+async function assertNoForeignIds(tx, modelName, rows, portalId, label) {
+  const ids = rows.map((row) => row.id).filter(Boolean);
+  for (const part of chunk(ids)) {
+    const used = await tx[modelName].count({ where: { id: { in: part }, portalId: { not: portalId } } });
+    if (used) throw conflict(`${label}编号与其他门户冲突，请刷新后重试`, "CROSS_PORTAL_ID_CONFLICT");
+  }
+}
+
 async function syncTableRows(model, rows, updateFields, options = {}) {
   if (options.deleteMissing !== false) await deleteMissingRows(model, rows);
   const existingRows = await model.findMany();
@@ -1606,7 +1630,7 @@ function sameDbValue(left, right) {
 }
 
 function requireRows(value, label) {
-  if (!Array.isArray(value)) throwBadRequest(`${label}必须是数组`);
+  if (!Array.isArray(value)) throw badRequest(`${label}必须是数组`);
   return value;
 }
 
@@ -1614,34 +1638,38 @@ function validateUniqueField(rows, label, field, suffix = "重复") {
   const seen = new Set();
   rows.forEach((row, index) => {
     const value = String(row[field] || "").trim();
-    if (!value) throwBadRequest(`${label}第 ${index + 1} 行缺少 ${field}`);
+    if (!value) throw badRequest(`${label}第 ${index + 1} 行缺少 ${field}`);
     const key = value.toLowerCase();
-    if (seen.has(key)) throwBadRequest(`${label}${suffix}`);
+    if (seen.has(key)) throw badRequest(`${label}${suffix}`);
     seen.add(key);
   });
 }
 
 function validateCatalogRows({ brands, models, services, parts }) {
-  validateUniqueField(brands, "品牌", "id");
-  validateUniqueField(brands, "品牌", "name", "名称重复");
-  validateUniqueField(models, "型号", "id");
-  validateUniqueField(services, "服务", "id");
-  validateUniqueField(parts, "配件", "id");
-  const brandIds = new Set(brands.map((brand) => brand.id));
-  models.forEach((model, index) => {
-    if (!model.name) throwBadRequest(`型号第 ${index + 1} 行名称不能为空`);
-    if (!brandIds.has(model.brandId)) throwBadRequest(`型号第 ${index + 1} 行品牌不存在`);
-  });
-  services.forEach((service, index) => {
-    if (!service.defaultName) throwBadRequest(`服务第 ${index + 1} 行名称不能为空`);
-  });
-  parts.forEach((part, index) => {
-    if (!part.defaultName) throwBadRequest(`配件第 ${index + 1} 行名称不能为空`);
-  });
+  if (brands) {
+    validateUniqueField(brands, "品牌", "id");
+    validateUniqueField(brands, "品牌", "name", "名称重复");
+  }
+  if (models) {
+    validateUniqueField(models, "型号", "id");
+    const brandIds = new Set((brands || []).map((brand) => brand.id));
+    models.forEach((model, index) => {
+      if (!model.name) throw badRequest(`型号第 ${index + 1} 行名称不能为空`);
+      if (!brandIds.has(model.brandId)) throw badRequest(`型号第 ${index + 1} 行品牌不存在`);
+    });
+  }
+  if (services) {
+    validateUniqueField(services, "服务", "id");
+    services.forEach((service, index) => {
+      if (!service.defaultName) throw badRequest(`服务第 ${index + 1} 行名称不能为空`);
+    });
+  }
+  if (parts) {
+    validateUniqueField(parts, "配件", "id");
+    parts.forEach((part, index) => {
+      if (!part.defaultName) throw badRequest(`配件第 ${index + 1} 行名称不能为空`);
+    });
+  }
 }
 
-function throwBadRequest(message) {
-  const error = new Error(message);
-  error.status = 400;
-  throw error;
-}
+export { PAGE_PERMISSION_KEYS };

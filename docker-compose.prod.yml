@@ -9,8 +9,13 @@ services:
       NODE_ENV: production
       NEXT_TELEMETRY_DISABLED: "1"
       REPAIRNOTE_COOKIE_SECURE: ${REPAIRNOTE_COOKIE_SECURE:-false}
-      REPAIRNOTE_ADMIN_USERNAME: ${REPAIRNOTE_ADMIN_USERNAME:-admin}
-      REPAIRNOTE_ADMIN_PASSWORD: ${REPAIRNOTE_ADMIN_PASSWORD:-admin123}
+      # 首次安装必须在 .env 里提供真实凭据；缺失 / 弱密码时初始化会失败并停止，不会创建默认账号。
+      REPAIRNOTE_ADMIN_USERNAME: ${REPAIRNOTE_ADMIN_USERNAME:-}
+      REPAIRNOTE_ADMIN_PASSWORD: ${REPAIRNOTE_ADMIN_PASSWORD:-}
+      # 浏览器访问本系统的唯一 origin（系统管理写接口同源校验），例如 https://repair.example.com
+      REPAIRNOTE_PUBLIC_ORIGIN: ${REPAIRNOTE_PUBLIC_ORIGIN:-}
+      # 旧单门户库升级时必填：指定原管理员的 Staff ID 作为系统主管理员
+      REPAIRNOTE_SYSTEM_ADMIN_STAFF_ID: ${REPAIRNOTE_SYSTEM_ADMIN_STAFF_ID:-}
     ports:
       - "${REPAIRNOTE_PORT:-3000}:3000"
     depends_on:

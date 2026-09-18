@@ -1,5 +1,6 @@
 const REQUIRED_COLLECTIONS = ["clients", "brands", "models", "services", "parts", "repairs"];
 const OPTIONAL_COLLECTIONS = ["users", "attributes", "technicians"];
+// users 仍允许出现在旧备份文件里（兼容旧格式），但恢复 / 导入前会被 cleanBusinessBackupData 剔除，绝不写入账号。
 
 export function validateBusinessDataShape(data, label = "数据") {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
@@ -28,7 +29,6 @@ export function validateBusinessDataShape(data, label = "数据") {
   validateRows(data.services, "服务", ["id", "defaultName"]);
   validateRows(data.parts, "配件", ["id", "defaultName"]);
   validateRows(data.repairs, "维修单", ["id", "clientId"]);
-  validateOptionalRows(data.users || [], "员工", ["id", "username"]);
   validateOptionalRows(data.attributes || [], "属性", ["id", "defaultName"]);
   validateOptionalRows(data.technicians || [], "维修师", ["id", "name"]);
   validateSortOrders(data.brands, "品牌");
@@ -48,8 +48,6 @@ export function validateBusinessDataShape(data, label = "数据") {
   validateUnique(data.repairs.filter((row) => row.ticket), "维修单", "ticket", "单号重复");
   validateEffectiveRepairTickets(data.repairs);
   validateUnique(data.repairs.filter((row) => row.publicToken), "维修单", "publicToken", "二维码编号重复");
-  validateUnique(data.users || [], "员工", "id");
-  validateUnique(data.users || [], "员工", "username", "账号重复");
   validateUnique(data.technicians || [], "维修师", "id");
   validateUnique(data.technicians || [], "维修师", "name", "名称重复");
   validateRelations(data);
@@ -61,6 +59,30 @@ export function withoutImportedUsers(data) {
   if (!data || typeof data !== "object") return data;
   const { users, ...businessData } = data;
   return businessData;
+}
+
+// 业务备份清洗：剔除账号 / 成员 / 会话 / 系统身份等身份字段，以及门户管理元数据；新旧文件、数据库历史快照、下载全部走同一规则。
+const IDENTITY_KEYS = ["users", "staff", "members", "portalMembers", "sessions", "staffSessions", "isSystemAdmin", "passwordHash", "portal", "portals"];
+const BACKUP_META_KEYS = ["formatVersion", "sourcePortalId", "sourcePortalName", "exportedAt", "backupId", "_revision", "_counts", "counts", "portalId"];
+
+export function cleanBusinessBackupData(data) {
+  if (!data || typeof data !== "object") return data;
+  const clean = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (IDENTITY_KEYS.includes(key) || BACKUP_META_KEYS.includes(key)) continue;
+    clean[key] = value;
+  }
+  if (Array.isArray(clean.repairs)) clean.repairs = clean.repairs.map(stripRowPortal);
+  for (const key of ["clients", "brands", "models", "services", "parts", "attributes", "technicians"]) {
+    if (Array.isArray(clean[key])) clean[key] = clean[key].map(stripRowPortal);
+  }
+  return clean;
+}
+
+function stripRowPortal(row) {
+  if (!row || typeof row !== "object") return row;
+  const { portalId, ...rest } = row;
+  return rest;
 }
 
 function validateRows(rows, label, requiredKeys) {

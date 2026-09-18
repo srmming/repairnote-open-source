@@ -1,19 +1,25 @@
-import { authErrorResponse, requirePageAccess } from "@/lib/auth";
-import { createBackupSnapshot } from "@/lib/backup-store";
-import { getBootstrapData, getBusinessRevision, syncFromClientData } from "@/lib/data-store";
-import { validateBusinessDataShape, withoutImportedUsers } from "@/lib/data-validation";
+import { errorResponse, readJsonBody, requestIdOf } from "@/lib/api-errors";
+import { assertNoPortalOverride, portalJson, requirePortalContext } from "@/lib/portal-context";
+import { assertBackupBelongsToPortal, createBackupSnapshotInTx } from "@/lib/backup-store";
+import { syncFromClientData } from "@/lib/data-store";
+import { cleanBusinessBackupData, validateBusinessDataShape } from "@/lib/data-validation";
 
+// 粘贴 JSON 导入：只写当前门户；新格式 sourcePortalId 必须一致，旧无门户格式仅默认门户显式确认（confirmLegacy:true）后导入。
 export async function POST(request) {
+  const requestId = requestIdOf(request);
   try {
-    const staff = await requirePageAccess("backup");
-    if (!staff.isAdmin) return Response.json({ error: "只有管理员可导入备份" }, { status: 403 });
-    const payload = await request.json();
-    const cleanData = withoutImportedUsers(validateBusinessDataShape(payload.data || payload, "备份文件"));
-    const revision = await getBusinessRevision();
-    await createBackupSnapshot({ kind: "safety", reason: "导入前自动备份", staff });
-    await syncFromClientData(cleanData, { expectedRevision: revision, preserveUpdatedAt: true });
-    return Response.json({ ok: true, data: await getBootstrapData() });
+    const ctx = await requirePortalContext(request, { admin: true });
+    const body = await readJsonBody(request);
+    assertNoPortalOverride(ctx, body);
+    const payload = body.data && typeof body.data === "object" ? body.data : body;
+    assertBackupBelongsToPortal(ctx, { ...payload, sourcePortalId: payload.sourcePortalId ?? body.sourcePortalId }, { legacyConfirmed: body.confirmLegacy === true });
+    const cleanData = cleanBusinessBackupData(validateBusinessDataShape(payload, "备份文件"));
+    const data = await syncFromClientData(ctx, cleanData, {
+      expectedRevision: body.expectedRevision,
+      beforeReplace: (tx) => createBackupSnapshotInTx(ctx, tx, { kind: "safety", reason: "导入前自动备份" })
+    });
+    return portalJson(ctx, { ok: true, data });
   } catch (error) {
-    return authErrorResponse(error);
+    return errorResponse(error, { requestId });
   }
 }

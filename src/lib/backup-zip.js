@@ -26,11 +26,13 @@ export function backupJsonFileName(date = new Date()) {
   return `repairnote-backup-${stamp}.json`;
 }
 
-export function zipResponse({ json, zipName, jsonName }) {
+export function zipResponse({ json, zipName, jsonName, headers = {} }) {
   return new Response(createZipBuffer(jsonName, json), {
     headers: {
       "Content-Type": "application/zip",
-      "Content-Disposition": `attachment; filename="${zipName}"`
+      "Content-Disposition": `attachment; filename="${zipName}"`,
+      "Cache-Control": "private, no-store",
+      ...headers
     }
   });
 }

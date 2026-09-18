@@ -1,12 +1,14 @@
-import { authErrorResponse, requirePageAccess } from "@/lib/auth";
-import { getBootstrapData } from "@/lib/data-store";
+import { errorResponse, requestIdOf } from "@/lib/api-errors";
+import { portalJson, requirePortalContext } from "@/lib/portal-context";
+import { exportPortalBusinessData } from "@/lib/backup-store";
 
-export async function GET() {
+export async function GET(request) {
+  const requestId = requestIdOf(request);
   try {
-    await requirePageAccess("backup");
-    const data = await getBootstrapData({ includeRepairItems: true });
-    return Response.json({ exportedAt: new Date().toISOString(), data });
+    const ctx = await requirePortalContext(request, { anyOf: ["backup"] });
+    const data = await exportPortalBusinessData(ctx);
+    return portalJson(ctx, { exportedAt: data.exportedAt, formatVersion: data.formatVersion, sourcePortalId: data.sourcePortalId, data });
   } catch (error) {
-    return authErrorResponse(error);
+    return errorResponse(error, { requestId });
   }
 }

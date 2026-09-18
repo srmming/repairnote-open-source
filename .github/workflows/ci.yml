@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  build-lint:
+    name: 构建与静态检查
+    runs-on: ubuntu-latest
+    env:
+      # 只做校验 / 构建，不连数据库；Prisma 读取 schema 时要求变量存在
+      DATABASE_URL: mysql://unused:unused@127.0.0.1:3306/unused
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npx prisma validate
+      - run: npx prisma generate
+      - run: npm run lint
+      - run: npm run build
+
+  acceptance-mysql:
+    name: 多门户验收（MySQL 8.4：API + 浏览器）
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root
+          MYSQL_DATABASE: repairnote_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci-root"
+          --health-interval=5s --health-timeout=3s --health-retries=20
+    env:
+      DATABASE_URL: mysql://root:ci-root@127.0.0.1:3306/repairnote_test
+      REPAIRNOTE_TEST_DATABASE_URL: mysql://root:ci-root@127.0.0.1:3306/repairnote_test
+      REPAIRNOTE_TEST_BASE_URL: http://localhost:3010
+      REPAIRNOTE_PUBLIC_ORIGIN: http://localhost:3010
+      REPAIRNOTE_ALLOW_DESTRUCTIVE_TESTS: "true"
+      REPAIRNOTE_COOKIE_SECURE: "false"
+      SMOKE_BROWSER_CHANNEL: bundled
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx playwright install --with-deps chromium
+      - name: 空库新装（预检 → 迁移 → 首位系统主管理员 → 检查）
+        run: node scripts/db-setup.mjs
+        env:
+          NODE_ENV: production
+          REPAIRNOTE_ADMIN_USERNAME: ci-admin
+          REPAIRNOTE_ADMIN_PASSWORD: Ci-Admin-Pass-2026
+      - run: npm run build
+      - name: 启动测试服务
+        run: |
+          REPAIRNOTE_PORT=3010 NODE_ENV=production nohup node server.js > server.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://localhost:3010/api/auth/me > /dev/null && exit 0; sleep 2; done
+          echo "服务未启动"; cat server.log; exit 1
+      - name: API + 数据库验收
+        run: node scripts/verify-portals.mjs
+      - name: 浏览器验收（设置 → 门户管理全路径）
+        run: node scripts/smoke-portals.mjs
+      - name: 原冒烟与报表对账（演示数据）
+        run: |
+          node scripts/reset-test-db.mjs
+          REPAIRNOTE_SEED_DEMO=true REPAIRNOTE_ADMIN_USERNAME=ming REPAIRNOTE_ADMIN_PASSWORD=Ci-Smoke-Pass-2026 npx prisma db seed
+          export BASE_URL=http://localhost:3010 SMOKE_USERNAME=ming SMOKE_PASSWORD=Ci-Smoke-Pass-2026
+          node scripts/smoke-ui.mjs
+          node scripts/smoke-mobile.mjs
+          node scripts/smoke-mobile-boss.mjs
+          node scripts/verify-reports-parity.mjs
+      - name: 上传报告与截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-reports
+          path: |
+            reports/
+            server.log
+          if-no-files-found: ignore
+
+  upgrade-rehearsal:
+    name: 旧库升级演练（${{ matrix.db.name }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        db:
+          - name: MySQL 8.4
+            image: mysql:8.4
+            cli: mysql
+            health: mysqladmin ping -h 127.0.0.1 -uroot -pci-root
+          - name: MariaDB 10.11
+            image: mariadb:10.11
+            cli: mariadb
+            health: healthcheck.sh --connect --innodb_initialized
+    services:
+      db:
+        image: ${{ matrix.db.image }}
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root
+          MARIADB_ROOT_PASSWORD: ci-root
+          MYSQL_DATABASE: repairnote_upgrade_test
+          MARIADB_DATABASE: repairnote_upgrade_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="${{ matrix.db.health }}"
+          --health-interval=5s --health-timeout=3s --health-retries=30
+    env:
+      DATABASE_URL: mysql://root:ci-root@127.0.0.1:3306/repairnote_upgrade_test
+      REPAIRNOTE_SYSTEM_ADMIN_STAFF_ID: u1
+      NODE_ENV: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - name: 构造旧单门户库（初始迁移建表 + 夹具数据）
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client > /dev/null
+          mysql -h 127.0.0.1 -uroot -pci-root repairnote_upgrade_test < prisma/migrations/20260703000000_init/migration.sql
+          mysql -h 127.0.0.1 -uroot -pci-root repairnote_upgrade_test < scripts/fixtures/legacy-single-portal.sql
+      - name: 预检必须拒绝未指定 / 非管理员 / 不存在的系统主管理员
+        run: |
+          if REPAIRNOTE_SYSTEM_ADMIN_STAFF_ID= node scripts/db-preflight.mjs; then echo "未指定 ID 不应通过"; exit 1; fi
+          if REPAIRNOTE_SYSTEM_ADMIN_STAFF_ID=u3 node scripts/db-preflight.mjs; then echo "非管理员不应通过"; exit 1; fi
+          if REPAIRNOTE_SYSTEM_ADMIN_STAFF_ID=nope node scripts/db-preflight.mjs; then echo "不存在的 ID 不应通过"; exit 1; fi
+      - name: 预检必须拒绝结构不一致（唯一索引被改成普通索引）
+        run: |
+          mysql -h 127.0.0.1 -uroot -pci-root repairnote_upgrade_test -e "ALTER TABLE Repair DROP INDEX Repair_publicToken_key, ADD INDEX Repair_publicToken_key (publicToken);"
+          if node scripts/db-preflight.mjs; then echo "结构不一致不应通过"; exit 1; fi
+          mysql -h 127.0.0.1 -uroot -pci-root repairnote_upgrade_test -e "ALTER TABLE Repair DROP INDEX Repair_publicToken_key, ADD UNIQUE INDEX Repair_publicToken_key (publicToken);"
+      - name: 迁移前快照 → 升级 → 迁移后核验 → 重复执行幂等
+        run: |
+          node scripts/verify-portal-migration.mjs --before
+          node scripts/db-setup.mjs
+          node scripts/verify-portal-migration.mjs --after
+          node scripts/db-setup.mjs
+          if node scripts/portal-admin.mjs bootstrap-system-admin --staff-id u2; then echo "已有系统主管理员时不应再指定其他账号"; exit 1; fi
+      - name: 上传迁移报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-reports-${{ strategy.job-index }}
+          path: reports/
+          if-no-files-found: ignore

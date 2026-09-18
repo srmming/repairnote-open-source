@@ -1,0 +1,81 @@
+{
+  "at": "2026-09-18T14:16:05.369Z",
+  "counts": {
+    "Staff": 3,
+    "StaffSession": 1,
+    "Client": 2,
+    "Brand": 1,
+    "Model": 1,
+    "Service": 1,
+    "Part": 1,
+    "Technician": 1,
+    "AttributeGroup": 1,
+    "Attribute": 1,
+    "Repair": 2,
+    "RepairItem": 1,
+    "Payment": 1,
+    "Setting": 1,
+    "BackupSnapshot": 1
+  },
+  "money": {
+    "budget": "100.00",
+    "deposit": "20.00",
+    "discount": "10.00"
+  },
+  "items": {
+    "total": "100.00000",
+    "cost": "30.00000"
+  },
+  "payments": {
+    "total": "20.00"
+  },
+  "repairs": "f2db1ef2e6bf2e58bbf28c4ff347a268c78942930ac47580e15f73f0efa84237",
+  "ids": {
+    "Client": "e2f31824254bd49f6c097d4571d8d071d2c6f0da9eb4bcc630a2157737d186f7",
+    "Brand": "33a714f5843df71a73d1061394a4ebfcf70167b0b5f2b555f15cc662abbf2709",
+    "Model": "8be3aec6a31718a3a4b6f77c632e46810529a13ae2083fbf66299b423a230367",
+    "Service": "4ae469e8eb6e844652e7b5d07cbca158126447151704382f4001c8f6e28d8f01",
+    "Part": "a235bbb5a89416dfa62e4ffe43611e62f1c1f61bcdecaf5406e4b246ecca976d",
+    "Technician": "33ca956ef35663fd021ae51b185afd28c303315a990b7e1fdb9dc141a584b75f",
+    "AttributeGroup": "8cc81b8d974e9e24732c773ab6e22c1235837434782562c6a44967c21b971279",
+    "Attribute": "47da8616bad3ec6c0e4eab13f45d209f71d50791155ff3f090797ab9ff954b05",
+    "RepairItem": "948584d295d500ff0f2df4322046eeb91ea4ae590f881a982a59e12de0c4981a",
+    "Payment": "95532481c282c64e947ccf5fedc79c7bc7633a7cf59840640f99242628b4765f",
+    "BackupSnapshot": "e1bdd0974a115f076849497ee062722e9a0c4fc65540374c8705369d0592a173"
+  },
+  "staff": [
+    {
+      "id": "u1",
+      "username": "ming",
+      "isAdmin": true,
+      "pagePermissions": [
+        "repairs",
+        "warranties",
+        "clients",
+        "settings"
+      ]
+    },
+    {
+      "id": "u2",
+      "username": "admin2",
+      "isAdmin": true,
+      "pagePermissions": [
+        "repairs"
+      ]
+    },
+    {
+      "id": "u3",
+      "username": "worker",
+      "isAdmin": false,
+      "pagePermissions": [
+        "repairs",
+        "warranties"
+      ]
+    }
+  ],
+  "settingMain": {
+    "shopName": "老店",
+    "phone": "600111222",
+    "taxRate": 21
+  }
+}

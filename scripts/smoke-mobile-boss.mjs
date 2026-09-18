@@ -1,7 +1,8 @@
 import { chromium } from "playwright";
 
 const baseUrl = process.env.BASE_URL || "http://localhost:3000";
-const defaultLocalLogin = process.env.NODE_ENV === "production" ? ["admin", "admin123"] : ["ming", "123456"];
+// 不再内置默认密码：冒烟账号 / 密码必须通过 SMOKE_USERNAME / SMOKE_PASSWORD（或 REPAIRNOTE_ADMIN_*）提供。
+const defaultLocalLogin = ["", ""];
 const smokeUsername = process.env.SMOKE_USERNAME || process.env.REPAIRNOTE_ADMIN_USERNAME || defaultLocalLogin[0];
 const smokePassword = process.env.SMOKE_PASSWORD || process.env.REPAIRNOTE_ADMIN_PASSWORD || defaultLocalLogin[1];
 const suffix = String(Date.now()).slice(-6);
@@ -110,7 +111,7 @@ async function openEditableOrderCard(page) {
   throw new Error("没有找到可编辑的订单卡");
 }
 
-const browser = await chromium.launch({ channel: "chrome", headless: true });
+const browser = await chromium.launch({ ...((process.env.SMOKE_BROWSER_CHANNEL || "chrome") === "bundled" ? {} : { channel: process.env.SMOKE_BROWSER_CHANNEL || "chrome" }), headless: true });
 const context = await browser.newContext({
   viewport: { width: 390, height: 844 },
   isMobile: true,

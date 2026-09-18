@@ -15,6 +15,8 @@ const baseUrl = process.env.BASE_URL || "http://localhost:3000";
 const username = process.env.SMOKE_USERNAME || process.env.REPAIRNOTE_ADMIN_USERNAME || "admin";
 const password = process.env.SMOKE_PASSWORD || process.env.REPAIRNOTE_ADMIN_PASSWORD || "admin123";
 const prisma = new PrismaClient();
+// 多门户：对账限定一个门户（SMOKE_PORTAL_ID，默认 default），接口带 X-Portal-Id，旧口径基准只读该门户的行。
+const portalId = process.env.SMOKE_PORTAL_ID || "default";
 const EPS = 0.011;
 let failures = 0;
 
@@ -215,7 +217,7 @@ function checkGroupList(label, oldRows, newRows, keyFn, fields) {
 }
 
 async function api(pathname, cookie) {
-  const response = await fetch(`${baseUrl}${pathname}`, { headers: { cookie } });
+  const response = await fetch(`${baseUrl}${pathname}`, { headers: { cookie, "X-Portal-Id": portalId } });
   if (!response.ok) throw new Error(`${pathname} -> HTTP ${response.status}`);
   return response.json();
 }
@@ -231,9 +233,9 @@ async function main() {
 
   console.log("加载全量数据（对账脚本专用，旧口径基准）…");
   const [repairs, clients, technicians] = await Promise.all([
-    prisma.repair.findMany({ include: { items: true, payments: { orderBy: { paidAt: "desc" } } } }),
-    prisma.client.findMany(),
-    prisma.technician.findMany()
+    prisma.repair.findMany({ where: { portalId }, include: { items: true, payments: { orderBy: { paidAt: "desc" } } } }),
+    prisma.client.findMany({ where: { portalId } }),
+    prisma.technician.findMany({ where: { portalId } })
   ]);
   const liteRepairs = repairs.map((repair) => ({
     ...repair,

@@ -3,11 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadDotEnv } from "./load-env.mjs";
 
-// MySQL / MariaDB 初始化：建表（migrate deploy）+ 生成客户端 + 首个管理员（幂等）+ 构建。
-// 前提：已在 .env 里把 DATABASE_URL 设为 mysql://...（Plesk 自带通常是 MariaDB）。
-//
-// 当前项目已统一为 MySQL/MariaDB；旧 SQLite/PostgreSQL 迁移入口已废弃。
-
+// MySQL / MariaDB 初始化：预检 + 迁移 + 首位系统主管理员 + 构建。前提：.env 里的 DATABASE_URL=mysql://...
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 loadDotEnv(root);
@@ -25,8 +21,7 @@ function run(command, args) {
 }
 
 console.log("RepairNOTE MySQL/MariaDB 初始化");
-run("npx", ["prisma", "migrate", "deploy", "--schema", "prisma/schema.prisma"]);
 run("npx", ["prisma", "generate", "--schema", "prisma/schema.prisma"]);
-run("npx", ["prisma", "db", "seed"]);
+run("node", ["scripts/db-setup.mjs"]);
 run("npx", ["next", "build"]);
-console.log("\n初始化完成。请在 Plesk 里重启 Node.js 应用。");
+console.log("\n初始化完成。");

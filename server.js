@@ -24,13 +24,30 @@ function loadDotEnv(root) {
 
 loadDotEnv(__dirname);
 
-process.env.REPAIRNOTE_ADMIN_USERNAME ||= "admin";
-process.env.REPAIRNOTE_ADMIN_PASSWORD ||= "admin123";
-process.env.REPAIRNOTE_COOKIE_SECURE ||= "false";
+process.env.NODE_ENV ||= "production";
 
 if (!process.env.DATABASE_URL || !process.env.DATABASE_URL.startsWith("mysql://")) {
   console.error("RepairNOTE 现在只支持 MySQL/MariaDB。请先设置 DATABASE_URL=mysql://...");
   process.exit(1);
+}
+
+// 启动预检：REPAIRNOTE_PUBLIC_ORIGIN 必须是浏览器访问本系统的唯一 origin（系统管理写接口的同源校验只信任它）。
+{
+  const value = String(process.env.REPAIRNOTE_PUBLIC_ORIGIN || "").trim();
+  let ok = false;
+  try {
+    const url = new URL(value);
+    const localhost = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    const secureRequired = process.env.REPAIRNOTE_COOKIE_SECURE === "true" || (process.env.REPAIRNOTE_COOKIE_SECURE !== "false" && process.env.NODE_ENV === "production");
+    ok = ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash && (url.pathname === "/" || !url.pathname)
+      && (!secureRequired || url.protocol === "https:" || localhost);
+  } catch {
+    ok = false;
+  }
+  if (!ok) {
+    console.error("RepairNOTE 启动失败：REPAIRNOTE_PUBLIC_ORIGIN 缺失或不合法。请设置为浏览器访问本系统的地址（不带路径），例如 https://repair.example.com；生产环境必须是 https。");
+    process.exit(1);
+  }
 }
 
 const port = Number.parseInt(process.env.REPAIRNOTE_PORT || process.env.PORT || "3000", 10);

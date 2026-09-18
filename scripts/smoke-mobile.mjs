@@ -1,7 +1,8 @@
 import { chromium } from "playwright";
 
 const baseUrl = process.env.BASE_URL || "http://localhost:3000";
-const defaultLocalLogin = process.env.NODE_ENV === "production" ? ["admin", "admin123"] : ["ming", "123456"];
+// 不再内置默认密码：冒烟账号 / 密码必须通过 SMOKE_USERNAME / SMOKE_PASSWORD（或 REPAIRNOTE_ADMIN_*）提供。
+const defaultLocalLogin = ["", ""];
 const smokeUsername = process.env.SMOKE_USERNAME || process.env.REPAIRNOTE_ADMIN_USERNAME || defaultLocalLogin[0];
 const smokePassword = process.env.SMOKE_PASSWORD || process.env.REPAIRNOTE_ADMIN_PASSWORD || defaultLocalLogin[1];
 const suffix = String(Date.now()).slice(-6);
@@ -53,7 +54,7 @@ async function login(page) {
   await page.getByRole("heading", { name: "维修单" }).waitFor();
 }
 
-const browser = await chromium.launch({ channel: "chrome", headless: true });
+const browser = await chromium.launch({ ...((process.env.SMOKE_BROWSER_CHANNEL || "chrome") === "bundled" ? {} : { channel: process.env.SMOKE_BROWSER_CHANNEL || "chrome" }), headless: true });
 const context = await browser.newContext({
   viewport: { width: 390, height: 844 },
   isMobile: true,
@@ -106,7 +107,8 @@ await step("手机新增维修单并保存", async () => {
   await page.evaluate(() => {
     window.location.hash = "/dashboard/repairs/new";
   });
-  await page.waitForFunction(() => location.hash === "#/dashboard/repairs/new");
+  // 多门户后旧 #/dashboard/... 链接会被映射为 #/p/<门户>/dashboard/...
+  await page.waitForFunction(() => location.hash.endsWith("/dashboard/repairs/new"));
   await page.getByPlaceholder("先输入客户电话搜索").fill(`677${suffix}`);
   await page.getByPlaceholder("客户姓名").fill(`手机客户${suffix}`);
   await page.getByPlaceholder("品牌").fill("Apple");
@@ -120,7 +122,7 @@ await step("手机新增维修单并保存", async () => {
   await page.getByRole("heading", { name: "维修单" }).waitFor();
 
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const exported = await (await page.request.get(`${baseUrl}/api/backup/export`)).json();
+    const exported = await (await page.request.get(`${baseUrl}/api/backup/export`, { headers: { "X-Portal-Id": process.env.SMOKE_PORTAL_ID || "default" } })).json();
     if (!exported.data) throw new Error(exported.error || "导出接口没有返回数据");
     const client = exported.data.clients.find((item) => item.phone === `677${suffix}`);
     const repair = exported.data.repairs.find((item) => item.clientId === client?.id);

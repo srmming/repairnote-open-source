@@ -157,15 +157,19 @@ function statusHint(status, text) {
 
 export default async function PublicStatusPage({ params }) {
   const { publicToken } = await params;
-  const [repair, settings] = await Promise.all([
-    prisma.repair.findUnique({
-      where: { publicToken },
-      include: { client: true, items: true, payments: true }
-    }),
-    prisma.setting.findUnique({ where: { id: "main" } })
-  ]);
+  // 公共链接：按全局唯一 token 找单，再按订单所属门户读取该门户设置；不读取 X-Portal-Id 或任何请求参数。
+  // 无效 token / 门户已停用统一返回同一个不可用页面，不泄露其他门店信息。
+  const token = String(publicToken || "").trim();
+  const found = token && token.length <= 191
+    ? await prisma.repair.findUnique({
+      where: { publicToken: token },
+      include: { portal: { select: { isActive: true } }, client: { select: { name: true } }, items: true, payments: true }
+    })
+    : null;
+  const repair = found && found.portal?.isActive ? found : null;
+  const settings = repair ? await prisma.setting.findUnique({ where: { portalId: repair.portalId } }) : null;
   const lang = publicLang(settings?.value || {});
-  const phone = settings?.value?.phone || "";
+  const phone = repair ? settings?.value?.phone || "" : "";
   const text = lang === "es"
     ? {
       title: "Estado de reparación",

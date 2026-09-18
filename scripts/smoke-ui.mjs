@@ -3,14 +3,18 @@ import { PrismaClient } from "@prisma/client";
 import crypto from "node:crypto";
 
 const baseUrl = process.env.BASE_URL || "http://localhost:3000";
-const defaultLocalLogin = process.env.NODE_ENV === "production" ? ["admin", "admin123"] : ["ming", "123456"];
+// 不再内置默认密码：冒烟账号 / 密码必须通过 SMOKE_USERNAME / SMOKE_PASSWORD（或 REPAIRNOTE_ADMIN_*）提供。
+const defaultLocalLogin = ["", ""];
 const smokeUsername = process.env.SMOKE_USERNAME || process.env.REPAIRNOTE_ADMIN_USERNAME || defaultLocalLogin[0];
 const smokePassword = process.env.SMOKE_PASSWORD || process.env.REPAIRNOTE_ADMIN_PASSWORD || defaultLocalLogin[1];
 const suffix = String(Date.now()).slice(-6);
+// 多门户：冒烟账号只属于一个门户时，旧 #/dashboard/... 链接自动映射到该门户；直接读库 / 调接口按 SMOKE_PORTAL_ID 限定。
+const smokePortalId = process.env.SMOKE_PORTAL_ID || "default";
+const portalHeaders = { "X-Portal-Id": smokePortalId };
 const results = [];
 const prisma = new PrismaClient();
 const smokeServiceName = `更换电池冒烟${suffix}`;
-await prisma.service.create({ data: { id: crypto.randomUUID(), defaultName: `Battery smoke ${suffix}`, category: "维修", zh: smokeServiceName, es: `Bateria smoke ${suffix}`, price: 49 } });
+await prisma.service.create({ data: { id: crypto.randomUUID(), portalId: smokePortalId, defaultName: `Battery smoke ${suffix}`, category: "维修", zh: smokeServiceName, es: `Bateria smoke ${suffix}`, price: 49 } });
 
 function ok(name) {
   results.push({ name, ok: true });
@@ -18,6 +22,10 @@ function ok(name) {
 
 function fail(name, error) {
   results.push({ name, ok: false, error: error?.message || String(error) });
+  if (process.env.SMOKE_DEBUG) {
+    console.log(`[debug] ${name} url=${page?.url?.()}`);
+    page?.screenshot?.({ path: `reports/screenshots/smoke-fail-${results.length}.png` }).catch(() => {});
+  }
 }
 
 async function step(name, fn) {
@@ -84,7 +92,7 @@ async function ensureChineseUi() {
   await page.getByRole("heading", { name: "维修单" }).waitFor();
 }
 
-const browser = await chromium.launch({ channel: "chrome", headless: true });
+const browser = await chromium.launch({ ...((process.env.SMOKE_BROWSER_CHANNEL || "chrome") === "bundled" ? {} : { channel: process.env.SMOKE_BROWSER_CHANNEL || "chrome" }), headless: true });
 const context = await browser.newContext();
 const page = await context.newPage();
 page.on("dialog", (dialog) => dialog.accept());
@@ -211,7 +219,7 @@ await step("员工新增、编辑、删除", async () => {
   await editFirstRowAction(`staff${suffix}`);
   await page.getByPlaceholder("邮箱").fill(`staff${suffix}@test.local`);
   await submitDialog();
-  await editFirstRowAction(`staff${suffix}`, "删除");
+  await editFirstRowAction(`staff${suffix}`, "移出门户"); // 多门户后员工页的“删除”改为“移出当前门户”
   await page.getByRole("cell", { name: `staff${suffix}`, exact: true }).waitFor({ state: "detached" });
 });
 
@@ -246,8 +254,8 @@ await step("新增维修单、价格项目、A4 和小票打印、保存", async
   await page.getByRole("button", { name: "保存" }).click();
   let repair = null;
   for (let attempt = 0; attempt < 30; attempt += 1) {
-    const client = await prisma.client.findFirst({ where: { phone: `688${suffix}` } });
-    repair = await prisma.repair.findFirst({ where: { clientId: client?.id }, orderBy: { createdAt: "desc" } });
+    const client = await prisma.client.findFirst({ where: { portalId: smokePortalId, phone: `688${suffix}` } });
+    repair = await prisma.repair.findFirst({ where: { portalId: smokePortalId, clientId: client?.id }, orderBy: { createdAt: "desc" } });
     if (repair?.ticket && repair?.publicToken) break;
     await page.waitForTimeout(500);
   }
@@ -283,7 +291,7 @@ await step("维修单详情编辑和状态流转", async () => {
 });
 
 await step("从已结束维修单创建保修单并编辑", async () => {
-  let sourceRepair = await prisma.repair.findFirst({ where: { status: "已取走", orderType: "repair" }, orderBy: { createdAt: "asc" } });
+  let sourceRepair = await prisma.repair.findFirst({ where: { portalId: smokePortalId, status: "已取走", orderType: "repair" }, orderBy: { createdAt: "asc" } });
   if (!sourceRepair && createdRepairId) {
     sourceRepair = await prisma.repair.update({ where: { id: createdRepairId }, data: { status: "已取走", warrantyStart: new Date().toISOString().slice(0, 16).replace("T", " ") } });
   }
@@ -319,9 +327,9 @@ await step("报表、设置、备份", async () => {
   await page.getByRole("button", { name: "保存" }).click();
   await page.getByText("设置已保存").waitFor();
   await go("/dashboard/backup", "备份");
-  const exported = await (await page.request.get(`${baseUrl}/api/backup/export`)).json();
+  const exported = await (await page.request.get(`${baseUrl}/api/backup/export`, { headers: portalHeaders })).json();
   if (!exported.data?.repairs?.length) throw new Error("导出备份缺少维修单数据");
-  const badImport = await page.request.post(`${baseUrl}/api/backup/import`, { data: {} });
+  const badImport = await page.request.post(`${baseUrl}/api/backup/import`, { data: {}, headers: portalHeaders });
   if (badImport.status() !== 400) throw new Error("坏备份 JSON 没有被拦截");
 });
 
