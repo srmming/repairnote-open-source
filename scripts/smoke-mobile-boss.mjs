@@ -111,7 +111,7 @@ async function openEditableOrderCard(page) {
   throw new Error("没有找到可编辑的订单卡");
 }
 
-const browser = await chromium.launch({ channel: "chrome", headless: true });
+const browser = await chromium.launch({ ...((process.env.SMOKE_BROWSER_CHANNEL || "chrome") === "bundled" ? {} : { channel: process.env.SMOKE_BROWSER_CHANNEL || "chrome" }), headless: true });
 const context = await browser.newContext({
   viewport: { width: 390, height: 844 },
   isMobile: true,

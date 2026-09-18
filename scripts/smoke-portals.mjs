@@ -77,7 +77,9 @@ async function waitWorkspace(page) {
 }
 
 await reset();
-const browser = await chromium.launch({ channel: process.env.SMOKE_BROWSER_CHANNEL || "chrome", headless: true });
+// 本地默认用已安装的 Chrome；CI 用 Playwright 自带的 Chromium（SMOKE_BROWSER_CHANNEL=bundled）。
+const channel = process.env.SMOKE_BROWSER_CHANNEL || "chrome";
+const browser = await chromium.launch({ ...(channel === "bundled" ? {} : { channel }), headless: true });
 const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
 const page = await context.newPage();
 page.on("dialog", (dialog) => dialog.accept());

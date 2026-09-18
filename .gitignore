@@ -17,6 +17,7 @@ repairnote-promo-20s/.thumbnails/
 !reports/screenshots/*.png
 *.sql
 !prisma/migrations/**/*.sql
+!scripts/fixtures/*.sql
 *.dump
 *.bak
 *.backup

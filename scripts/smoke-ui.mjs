@@ -92,7 +92,7 @@ async function ensureChineseUi() {
   await page.getByRole("heading", { name: "维修单" }).waitFor();
 }
 
-const browser = await chromium.launch({ channel: "chrome", headless: true });
+const browser = await chromium.launch({ ...((process.env.SMOKE_BROWSER_CHANNEL || "chrome") === "bundled" ? {} : { channel: process.env.SMOKE_BROWSER_CHANNEL || "chrome" }), headless: true });
 const context = await browser.newContext();
 const page = await context.newPage();
 page.on("dialog", (dialog) => dialog.accept());

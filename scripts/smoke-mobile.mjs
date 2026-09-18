@@ -54,7 +54,7 @@ async function login(page) {
   await page.getByRole("heading", { name: "维修单" }).waitFor();
 }
 
-const browser = await chromium.launch({ channel: "chrome", headless: true });
+const browser = await chromium.launch({ ...((process.env.SMOKE_BROWSER_CHANNEL || "chrome") === "bundled" ? {} : { channel: process.env.SMOKE_BROWSER_CHANNEL || "chrome" }), headless: true });
 const context = await browser.newContext({
   viewport: { width: 390, height: 844 },
   isMobile: true,
